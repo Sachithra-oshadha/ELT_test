@@ -8,7 +8,7 @@ Before running the scripts, ensure you have the following installed:
 
 Python: Version 3.8 or higher
 PostgreSQL: A running PostgreSQL database server
-Excel File: An Excel file containing load profile data (e.g., AZ1088 Load Profiles.xlsx)
+Excel File: An Excel file containing load profile data in the same directory as python files
 Environment Variables: A .env file with database configuration (see below)
 
 ## Installation
@@ -54,7 +54,7 @@ Environment Variables: A .env file with database configuration (see below)
 
     This script reads load profile data from an Excel file and inserts it into the PostgreSQL database.
 
-    Input: An Excel file (e.g., AZ1088 Load Profiles.xlsx) with columns like CUSTOMER_REF, SERIAL, TIMESTAMP, AVG._IMPORT_KW (kW), etc.
+    Input: An Excel file with relevant columns.
     Output: Data inserted into the customer, meter, measurement, and phase_measurement tables.
 
     To run:

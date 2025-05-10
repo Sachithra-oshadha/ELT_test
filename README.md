@@ -8,7 +8,7 @@ Before running the scripts, ensure you have the following installed:
 
 Python: Version 3.8 or higher
 PostgreSQL: A running PostgreSQL database server
-Excel File: An Excel file containing load profile data in the same directory as python files
+Excel File or CSV File: An Excel or CSV file containing load profile data in the same directory as python files
 Environment Variables: A .env file with database configuration (see below)
 
 ## Installation

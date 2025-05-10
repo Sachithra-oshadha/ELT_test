@@ -21,8 +21,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class LoadProfilePipeline:
-    def __init__(self, excel_file_path):
-        """Initialize the pipeline with Excel file path."""
+    def __init__(self, file_path):
+        """Initialize the pipeline with file path."""
         self.db_config = {
             'dbname': os.getenv('DB_NAME'),
             'user': os.getenv('DB_USER'),
@@ -35,7 +35,7 @@ class LoadProfilePipeline:
             if value is None:
                 logger.error(f"Environment variable for {key} is not set")
                 raise ValueError(f"Environment variable for {key} is not set")
-        self.excel_file_path = excel_file_path
+        self.file_path = file_path
         self.conn = None
         self.cur = None
 
@@ -57,14 +57,21 @@ class LoadProfilePipeline:
             self.conn.close()
             logger.info("Database connection closed")
 
-    def read_excel(self):
-        """Read the Excel file into a pandas DataFrame."""
+    def read_data(self):
+        """Read the Excel or CSV file into a pandas DataFrame."""
         try:
-            df = pd.read_excel(self.excel_file_path, engine='openpyxl')
-            logger.info(f"Successfully read Excel file: {self.excel_file_path}")
+            file_extension = os.path.splitext(self.file_path)[1].lower()
+            if file_extension in ['.xlsx', '.xls']:
+                df = pd.read_excel(self.file_path, engine='openpyxl')
+                logger.info(f"Successfully read Excel file: {self.file_path}")
+            elif file_extension == '.csv':
+                df = pd.read_csv(self.file_path)
+                logger.info(f"Successfully read CSV file: {self.file_path}")
+            else:
+                raise ValueError(f"Unsupported file format: {file_extension}")
             return df
         except Exception as e:
-            logger.error(f"Failed to read Excel file: {e}")
+            logger.error(f"Failed to read file: {e}")
             raise
 
     def insert_customers(self, df):
@@ -233,8 +240,8 @@ class LoadProfilePipeline:
             # Connect to database
             self.connect_db()
             
-            # Read Excel file
-            df = self.read_excel()
+            # Read data file
+            df = self.read_data()
             
             # Insert data in order to respect foreign key constraints
             self.insert_customers(df)
@@ -252,14 +259,14 @@ class LoadProfilePipeline:
             self.close_db()
 
 if __name__ == "__main__":
-    # Path to Excel file
-    excel_file_path = r"AZ1088 Load Profiles.xlsx"
+    # Path to data file
+    file_path = r"AZ1088 Load Profiles.xlsx"
     
     # Validate file existence
-    if not os.path.exists(excel_file_path):
-        logger.error(f"Excel file not found: {excel_file_path}")
+    if not os.path.exists(file_path):
+        logger.error(f"Data file not found: {file_path}")
         exit(1)
     
     # Run pipeline
-    pipeline = LoadProfilePipeline(excel_file_path)
+    pipeline = LoadProfilePipeline(file_path)
     pipeline.run()

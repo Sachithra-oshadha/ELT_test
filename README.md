@@ -1,6 +1,6 @@
 # Load Profile and Customer Behavior Analysis Pipeline
 
-This repository contains two Python scripts for processing load profile data and analyzing customer behavior using a PostgreSQL database and machine learning techniques. The scripts are designed to read data from Excel files, store it in a database, and perform predictive modeling and visualization for customer energy usage patterns.
+This repository contains two Python scripts for processing load profile data and analyzing customer behavior using a PostgreSQL database and machine learning techniques. The scripts are designed to read data from Excel or CSV files, store it in a database, and perform predictive modeling and visualization for customer energy usage patterns.
 
 ## Prerequisites
 

@@ -15,9 +15,6 @@ Environment Variables: A .env file with database configuration (see below)
 
 1. Clone the Repository:
 
-    git clone https://github.com/Sachithra-oshadha/ELT_test.git
-cd your-repo-name
-
 2. Set Up a Virtual Environment (recommended):
 
     python -m venv venv

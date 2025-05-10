@@ -6,13 +6,10 @@ This repository contains two Python scripts for processing load profile data and
 
 Before running the scripts, ensure you have the following installed:
 
-Python: Version 3.8 or higher
-
-PostgreSQL: A running PostgreSQL database server
-
-Excel File or CSV File: An Excel or CSV file containing load profile data in the same directory as python files
-
-Environment Variables: A .env file with database configuration (see below)
+* Python: Version 3.8 or higher
+* PostgreSQL: A running PostgreSQL database server
+* Excel File or CSV File: An Excel or CSV file containing load profile data in the same directory as python files
+* Environment Variables: A .env file with database configuration (see below)
 
 ## Installation
 
@@ -92,35 +89,25 @@ Environment Variables: A .env file with database configuration (see below)
 
 After running the scripts, the following directories and files will be created:
 
-    customer_plots/: Contains subdirectories for each customer with CSV metrics and PNG plots.
-    
-    data_insertion.log: Log file for load_profile_pipeline.py.
-    
-    customer_behavior.log: Log file for customer_behavior.py.
+    * customer_plots/: Contains subdirectories for each customer with CSV metrics and PNG plots.
+    * data_insertion.log: Log file for load_profile_pipeline.py.
+    * customer_behavior.log: Log file for customer_behavior.py.
 
 ## Notes
 
-Logging: Both scripts log information to console and files (data_insertion.log and customer_behavior.log).
-
-Error Handling: The scripts include robust error handling and logging for debugging.
-
-Incremental Training: The customer_behavior.py script supports incremental model training if new data is available.
-
-File Paths: Update the excel_file_path in load_profile_pipeline.py to match your Excel file location.
-
-Database Schema: Ensure the database tables are created with the correct schema before running the scripts.
-
-Plot Storage: Plots and metrics are saved in customer-specific folders with timestamps for versioning.
+* Logging: Both scripts log information to console and files (data_insertion.log and customer_behavior.log).
+* Error Handling: The scripts include robust error handling and logging for debugging.
+* Incremental Training: The customer_behavior.py script supports incremental model training if new data is available.
+* File Paths: Update the excel_file_path in load_profile_pipeline.py to match your Excel file location.
+* Database Schema: Ensure the database tables are created with the correct schema before running the scripts.
+* Plot Storage: Plots and metrics are saved in customer-specific folders with timestamps for versioning.
 
 ## Troubleshooting
 
-Database Connection Issues: Verify the .env file and PostgreSQL server status.
-
-Excel File Errors: Ensure the Excel file exists and has the expected column names.
-
-Missing Packages: Run pip install -r requirements.txt to install all dependencies.
-
-Plotting Issues: Ensure matplotlib and seaborn are installed correctly.
+* Database Connection Issues: Verify the .env file and PostgreSQL server status.
+* Excel File Errors: Ensure the Excel file exists and has the expected column names.
+* Missing Packages: Run pip install -r requirements.txt to install all dependencies.
+* Plotting Issues: Ensure matplotlib and seaborn are installed correctly.
 
 ## License
 

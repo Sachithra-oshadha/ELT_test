@@ -15,29 +15,29 @@ Environment Variables: A .env file with database configuration (see below)
 
 1. Clone the Repository:
 
-git clone https://github.com/your-username/your-repo-name.git
+    git clone https://github.com/Sachithra-oshadha/ELT_test.git
 cd your-repo-name
 
 2. Set Up a Virtual Environment (recommended):
 
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 3. Install Dependencies: Install the required Python packages listed in requirements.txt:
 
-pip install -r requirements.txt
+    pip install -r requirements.txt
 
-The requirements.txt includes:
+    The requirements.txt includes:
 
-    pandas>=1.5.0: For data manipulation and Excel file reading
-    psycopg2-binary>=2.9.0: For PostgreSQL database connectivity
-    openpyxl>=3.0.0: For reading Excel files
-    python-dotenv>=0.19.0: For loading environment variables
-    scikit-learn>=1.0.0: For machine learning (RandomForestRegressor)
-    joblib>=1.1.0: For model serialization
-    matplotlib>=3.5.0: For plotting
-    seaborn>=0.11.0: For enhanced visualizations
-    numpy>=1.21.0: For numerical operations
+        pandas>=1.5.0: For data manipulation and Excel file reading
+        psycopg2-binary>=2.9.0: For PostgreSQL database connectivity
+        openpyxl>=3.0.0: For reading Excel files
+        python-dotenv>=0.19.0: For loading environment variables
+        scikit-learn>=1.0.0: For machine learning (RandomForestRegressor)
+        joblib>=1.1.0: For model serialization
+        matplotlib>=3.5.0: For plotting
+        seaborn>=0.11.0: For enhanced visualizations
+        numpy>=1.21.0: For numerical operations
 
 4. Configure Environment Variables: Create a .env file in the project root with the following structure:
 
@@ -47,37 +47,37 @@ The requirements.txt includes:
     DB_HOST=your_database_host - localhost in test case
     DB_PORT=your_database_port - 5432 in test case
 
-Replace the values with your PostgreSQL database credentials.
+    Replace the values with your PostgreSQL database credentials.
 
-Set Up PostgreSQL Database: Ensure your PostgreSQL database is running and has the necessary tables (customer, meter, measurement, phase_measurement, customer_model). The schema for these tables should match the structure expected by the scripts (refer to the INSERT queries in load_profile_pipeline.py).
+    Set Up PostgreSQL Database: Ensure your PostgreSQL database is running and has the necessary tables (customer, meter, measurement, phase_measurement, customer_model). The schema for these tables should match the structure expected by the scripts (refer to the INSERT queries in load_profile_pipeline.py).
 
 ## Usage
 
 1. Load Profile Pipeline (load_profile_pipeline.py)
 
-This script reads load profile data from an Excel file and inserts it into the PostgreSQL database.
+    This script reads load profile data from an Excel file and inserts it into the PostgreSQL database.
 
-Input: An Excel file (e.g., AZ1088 Load Profiles.xlsx) with columns like CUSTOMER_REF, SERIAL, TIMESTAMP, AVG._IMPORT_KW (kW), etc.
-Output: Data inserted into the customer, meter, measurement, and phase_measurement tables.
+    Input: An Excel file (e.g., AZ1088 Load Profiles.xlsx) with columns like CUSTOMER_REF, SERIAL, TIMESTAMP, AVG._IMPORT_KW (kW), etc.
+    Output: Data inserted into the customer, meter, measurement, and phase_measurement tables.
 
-To run:
+    To run:
 
-python load_profile_pipeline.py
-Ensure the Excel file path in the script (excel_file_path) points to a valid file.
+    python load_profile_pipeline.py
+    Ensure the Excel file path in the script (excel_file_path) points to a valid file.
 
 2. Customer Behavior Pipeline (customer_behavior.py)
 
-This script analyzes customer energy usage, trains a RandomForestRegressor model for each customer, and generates visualizations.
+    This script analyzes customer energy usage, trains a RandomForestRegressor model for each customer, and generates visualizations.
 
-Input: Data in the PostgreSQL database (populated by load_profile_pipeline.py)
-Output: 
-    Trained models stored in the customer_model table
-    CSV files with behavior metrics (in customer_plots/<customer_ref>/)
-    PNG plots of usage patterns and feature importance (in customer_plots/<customer_ref>/)
+    Input: Data in the PostgreSQL database (populated by load_profile_pipeline.py)
+    Output: 
+        Trained models stored in the customer_model table
+        CSV files with behavior metrics (in customer_plots/<customer_ref>/)
+        PNG plots of usage patterns and feature importance (in customer_plots/<customer_ref>/)
 
-To run:
+    To run:
 
-python customer_behavior.py
+    python customer_behavior.py
 
 ## Directory Structure
 

@@ -52,34 +52,43 @@ Before running the scripts, ensure you have the following installed:
 
 1. Load Profile Pipeline (load_profile_pipeline.py)
 
-    This script reads load profile data from an Excel file and inserts it into the PostgreSQL database.
-
-    Input: An Excel file with relevant columns.
-
-    Output: Data inserted into the customer, meter, measurement, and phase_measurement tables.
-
-    To run:
-
-    python load_profile_pipeline.py
+    This script reads load profile data from an Excel file and inserts it into the PostgreSQL database.  
     
-    Ensure the Excel file path in the script (excel_file_path) points to a valid file.
+    Input: An Excel file with relevant columns.  
+    Output: Data inserted into the customer, meter, measurement, and phase_measurement tables.  
+    
+    To run:  
+        python load_profile_pipeline.py  
+        Ensure the Excel file path in the script (excel_file_path) points to a valid file.  
 
 2. Customer Behavior Pipeline (customer_behavior.py)
 
-    This script analyzes customer energy usage, trains a RandomForestRegressor model for each customer, and generates visualizations.
+    This pipeline consists of three scripts (customer_behavior_pipeline_1day.py, customer_behavior_pipeline_1week.py, customer_behavior_pipeline_1month.py) that analyze customer energy usage, train a Bidirectional LSTM (Bi-LSTM) model for each customer, and generate visualizations. Each script uses a different time window for sequence modeling, corresponding to 15-minute interval data.  
+    
+    Input: Energy usage data in the PostgreSQL database (populated by load_profile_pipeline.py), stored in the measurement table with columns serial, timestamp, avg_import_kw, import_kwh, and power_factor.  
+    Output:  
+        Trained Models: Bi-LSTM models serialized in .keras format, stored in the customer_model table (columns: customer_ref, model_data, trained_at, mse, r2_score).  
+        CSV Files: Behavior metrics (e.g., max usage, average usage, peak hour) saved as metrics_<timestamp>.csv in customer_plots/<customer_ref>/.  
+        PNG Plots: Hourly usage patterns saved as usage_pattern_<timestamp>.png in customer_plots/<customer_ref>/. Feature importance plotting is not supported for Bi-LSTM and logs a warning.  
+    
+    Scripts and Configurations:  
+        customer_behavior_pipeline_1day.py: Uses time_steps = 96 (1 day, 4 * 24 intervals). Suitable for short-term patterns.  
+        customer_behavior_pipeline_1week.py: Uses time_steps = 672 (1 week, 4 * 24 * 7 intervals). Balances detail and data requirements.  
+        customer_behavior_pipeline_1month.py: Uses time_steps = 2880 (1 month, 4 * 24 * 30 intervals, assuming 30-day month). Captures long-term trends but requires significant data.  
 
-    Input: Data in the PostgreSQL database (populated by load_profile_pipeline.py)
+    Requirements:  
+        PostgreSQL database with populated measurement, meter, and customer tables.  
+        .env file with database credentials (DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT).  
+        Dependencies listed in requirements.txt (e.g., tensorflow>=2.16.0, pandas, psycopg2-binary).  
 
-    Output: 
-        Trained models stored in the customer_model table
+    To Run:  
+        Install dependencies:  
+            pip install -r requirements.txt  
+            Ensure the .env file is configured with database credentials.  
 
-        CSV files with behavior metrics (in customer_plots/<customer_ref>/)
-        
-        PNG plots of usage patterns and feature importance (in customer_plots/<customer_ref>/)
-
-    To run:
-
-    python customer_behavior.py
+        Run the desired script, e.g.:  
+            python customer_behavior_pipeline_1week.py  
+            Replace with customer_behavior_pipeline_1day.py or customer_behavior_pipeline_1month.py based on the desired time window.  
 
 ## Directory Structure
 

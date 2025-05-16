@@ -38,11 +38,11 @@ Before running the scripts, ensure you have the following installed:
 
 4. Configure Environment Variables: Create a .env file in the project root with the following structure:
 
-    DB_NAME=your_database_name - load_profile_db in test case
-    DB_USER=your_database_user - postgres in test case
-    DB_PASSWORD=your_database_password
-    DB_HOST=your_database_host - aws postgres rds instance in test case
-    DB_PORT=your_database_port - 5432 in test case
+    DB_NAME=your_database_name - load_profile_db in test case  
+    DB_USER=your_database_user - postgres in test case  
+    DB_PASSWORD=your_database_password  
+    DB_HOST=your_database_host - aws postgres rds instance in test case  
+    DB_PORT=your_database_port - 5432 in test case  
 
     Replace the values with your PostgreSQL database credentials (no need to replace if using same aws instance for development).
 

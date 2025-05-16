@@ -13,7 +13,7 @@ Before running the scripts, ensure you have the following installed:
 
 ## Installation
 
-1. Clone the Repository:
+1. Clone the Repository
 
 2. Set Up a Virtual Environment (recommended):
 
@@ -39,16 +39,12 @@ Before running the scripts, ensure you have the following installed:
 4. Configure Environment Variables: Create a .env file in the project root with the following structure:
 
     DB_NAME=your_database_name - load_profile_db in test case
-
     DB_USER=your_database_user - postgres in test case
-    
     DB_PASSWORD=your_database_password
-    
-    DB_HOST=your_database_host - localhost in test case
-    
+    DB_HOST=your_database_host - aws postgres rds instance in test case
     DB_PORT=your_database_port - 5432 in test case
 
-    Replace the values with your PostgreSQL database credentials.
+    Replace the values with your PostgreSQL database credentials (no need to replace if using same aws instance for development).
 
     Set Up PostgreSQL Database: Ensure your PostgreSQL database is running and has the necessary tables (customer, meter, measurement, phase_measurement, customer_model). The schema for these tables should match the structure expected by the scripts (refer to the INSERT queries in load_profile_pipeline.py).
 

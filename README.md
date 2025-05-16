@@ -120,6 +120,13 @@ After running the scripts, the following directories and files will be created:
 * Missing Packages: Run pip install -r requirements.txt to install all dependencies.
 * Plotting Issues: Ensure matplotlib and seaborn are installed correctly.
 
+## Issues/ Bugs
+
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
+
+## Development
+
+- Update usage and directiry structure with any updates done to the repository.
+- Update bugs section if there are any unexpected issues pop up and if resolved add the resolving method to troublshooting section.

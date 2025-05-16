@@ -1,8 +1,8 @@
-# Load Profile and Customer Behavior Analysis Pipeline
+# Load Profile and Customer Behavior Analysis Pipeline {#title}
 
 This repository contains two Python scripts for processing load profile data and analyzing customer behavior using a PostgreSQL database and machine learning techniques. The scripts are designed to read data from Excel or CSV files, store it in a database, and perform predictive modeling and visualization for customer energy usage patterns.
 
-## Prerequisites
+## Prerequisites {#prerequisites}
 
 Before running the scripts, ensure you have the following installed:
 
@@ -11,7 +11,7 @@ Before running the scripts, ensure you have the following installed:
 * Excel File or CSV File: An Excel or CSV file containing load profile data in the same directory as python files
 * Environment Variables: A .env file with database configuration (see below)
 
-## Installation
+## Installation {#installation}
 
 1. Clone the Repository
 
@@ -50,7 +50,7 @@ Before running the scripts, ensure you have the following installed:
 
     Set Up PostgreSQL Database: Ensure your PostgreSQL database is running and has the necessary tables (customer, meter, measurement, phase_measurement, customer_model). The schema for these tables should match the structure expected by the scripts (refer to the INSERT queries in load_profile_pipeline.py).
 
-## Usage
+## Usage {#usage}
 
 1. Load Profile Pipeline (load_profile_pipeline.py)
 
@@ -96,7 +96,7 @@ Before running the scripts, ensure you have the following installed:
     ```  
     Replace with customer_behavior_pipeline_1day.py or customer_behavior_pipeline_1month.py based on the desired time window.  
 
-## Directory Structure
+## Directory Structure {#dir_structure}
 
 After running the scripts, the following directories and files will be created:
 
@@ -104,7 +104,7 @@ After running the scripts, the following directories and files will be created:
 - data_insertion.log: Log file for load_profile_pipeline.py
 - customer_behavior.log: Log file for customer_behavior.py.
 
-## Notes
+## Notes {#notes}
 
 * Logging: Both scripts log information to console and files (data_insertion.log and customer_behavior.log).
 * Error Handling: The scripts include robust error handling and logging for debugging.
@@ -113,20 +113,20 @@ After running the scripts, the following directories and files will be created:
 * Database Schema: Ensure the database tables are created with the correct schema before running the scripts.
 * Plot Storage: Plots and metrics are saved in customer-specific folders with timestamps for versioning.
 
-## Troubleshooting
+## Troubleshooting {#troubleshooting}
 
 * Database Connection Issues: Verify the .env file and PostgreSQL server status.
 * Excel File Errors: Ensure the Excel file exists and has the expected column names.
 * Missing Packages: Run pip install -r requirements.txt to install all dependencies.
 * Plotting Issues: Ensure matplotlib and seaborn are installed correctly.
 
-## Issues/ Bugs
+## Bugs {#bugs}
 
-## License
+## License {#license}
 
 This project is licensed under the MIT License. See the LICENSE file for details.
 
-## Development
+## Development {#dev}
 
-- Update usage and directiry structure with any updates done to the repository.
-- Update bugs section if there are any unexpected issues pop up and if resolved add the resolving method to troublshooting section.
+- Update [usage](#usage) and [directiry structure](#dir_structure) with any updates done to the repository.
+- Update [bugs](#bugs) section if there are any unexpected issues pop up and if resolved add the resolving method to [troublshooting](#troubleshooting) section.

@@ -1,410 +1,343 @@
 import pandas as pd
-import psycopg2
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Dense, LSTM, Bidirectional
-from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.optimizers import Adam
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.preprocessing import StandardScaler
 import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import StandardScaler
+import psycopg2
 import matplotlib.pyplot as plt
-import seaborn as sns
-from io import BytesIO
-import logging
-from datetime import datetime
 import os
+from datetime import datetime, timedelta
+import io
+import logging
 from dotenv import load_dotenv
-import tempfile
+import pytz
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
+
+now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('customer_behavior.log'),
+        logging.FileHandler(f'customer_behavior_bilstm_{now}.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
+class ElectricityDataset(Dataset):
+    def __init__(self, data: np.ndarray, sequence_length: int):
+        self.data = data
+        self.sequence_length = sequence_length
+        
+    def __len__(self) -> int:
+        return len(self.data) - self.sequence_length
+    
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        x = self.data[idx:idx + self.sequence_length]
+        y = self.data[idx + self.sequence_length, 0]  # Predicting avg_import_kw
+        return torch.FloatTensor(x), torch.FloatTensor([y])
+
+class BiLSTM(nn.Module):
+    def __init__(self, input_size: int, hidden_size: int = 64, num_layers: int = 2, dropout: float = 0.2):
+        super(BiLSTM, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, 
+                           dropout=dropout, bidirectional=True)
+        self.fc = nn.Linear(hidden_size * 2, 1)  # *2 for bidirectional
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch_size = x.size(0)
+        h0 = torch.zeros(self.num_layers * 2, batch_size, self.hidden_size).to(x.device)
+        c0 = torch.zeros(self.num_layers * 2, batch_size, self.hidden_size).to(x.device)
+        
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc(out[:, -1, :])  # Take the last time step
+        return out
+
 class CustomerBehaviorPipeline:
-    def __init__(self):
-        """Initialize the pipeline with database configuration and Bi-LSTM parameters."""
+    def __init__(self, output_base_dir: str = f"customer_outputs_bilstm_day_{now}"):
         self.db_config = {
-            'dbname': os.getenv('DB_NAME'),
+            'dbname': os.getenv('DB_NAME_BILSTM_DAY'),
             'user': os.getenv('DB_USER'),
             'password': os.getenv('DB_PASSWORD'),
             'host': os.getenv('DB_HOST'),
             'port': os.getenv('DB_PORT')
         }
+        self.output_base_dir = output_base_dir
         self.conn = None
         self.cur = None
-        self.last_processed_timestamp = {}
-        self.output_base_dir = "customer_plots"
-        self.time_steps = 96  # 15-minute intervals for one day (4 * 24)
-        self.scaler = StandardScaler()
-        plt.style.use('seaborn-v0_8')
-
+        
         if not os.path.exists(self.output_base_dir):
             os.makedirs(self.output_base_dir)
-            logger.info(f"Created base output directory: {self.output_base_dir}")
+            logger.info(f"Created output directory: {self.output_base_dir}")
 
     def connect_db(self):
-        """Establish connection to PostgreSQL database."""
         try:
             self.conn = psycopg2.connect(**self.db_config)
             self.cur = self.conn.cursor()
-            logger.info("Successfully connected to PostgreSQL database")
+            logger.info("Connected to PostgreSQL database")
         except Exception as e:
             logger.error(f"Failed to connect to database: {e}")
             raise
 
     def close_db(self):
-        """Close database connection."""
         if self.cur:
             self.cur.close()
         if self.conn:
             self.conn.close()
             logger.info("Database connection closed")
 
-    def fetch_customer_data(self, customer_ref, min_timestamp=None):
-        """Fetch measurement data for a specific customer."""
-        query = """
-        SELECT m.serial, m.timestamp, m.avg_import_kw, m.import_kwh, m.power_factor,
-               TO_TIMESTAMP(m.timestamp / 1000) AS datetime
-        FROM measurement m
-        JOIN meter mt ON m.serial = mt.serial
-        WHERE mt.customer_ref = %s
-        """
-        params = [customer_ref]
-        if min_timestamp:
-            query += " AND m.timestamp > %s"
-            params.append(min_timestamp)
-        
+    def fetch_customer_refs(self) -> list[int]:
         try:
-            df = pd.read_sql(query, self.conn, params=params)
+            self.cur.execute("SELECT customer_ref FROM customer")
+            customer_refs = [row[0] for row in self.cur.fetchall()]
+            logger.info(f"Fetched {len(customer_refs)} customer references")
+            return customer_refs
+        except Exception as e:
+            logger.error(f"Error fetching customer references: {e}")
+            raise
+
+    def fetch_data(self, customer_ref: int) -> pd.DataFrame:
+        try:
+            query = """
+                SELECT m.timestamp, m.avg_import_kw, m.power_factor, 
+                       pm_a.inst_current AS phase_a_current, pm_a.inst_voltage AS phase_a_voltage,
+                       pm_b.inst_current AS phase_b_current, pm_b.inst_voltage AS phase_b_voltage,
+                       pm_c.inst_current AS phase_c_current, pm_c.inst_voltage AS phase_c_voltage
+                FROM measurement m
+                JOIN meter mt ON m.serial = mt.serial
+                LEFT JOIN phase_measurement pm_a ON m.serial = pm_a.serial AND m.timestamp = pm_a.timestamp AND pm_a.phase = 'A'
+                LEFT JOIN phase_measurement pm_b ON m.serial = pm_b.serial AND m.timestamp = pm_b.timestamp AND pm_b.phase = 'B'
+                LEFT JOIN phase_measurement pm_c ON m.serial = pm_c.serial AND m.timestamp = pm_c.timestamp AND pm_c.phase = 'C'
+                WHERE mt.customer_ref = %s
+                ORDER BY m.timestamp
+            """
+            df = pd.read_sql(query, self.conn, params=(customer_ref,))
             logger.info(f"Fetched {len(df)} records for customer {customer_ref}")
             return df
         except Exception as e:
-            logger.error(f"Failed to fetch data for customer {customer_ref}: {e}")
+            logger.error(f"Error fetching data for customer {customer_ref}: {e}")
             raise
 
-    def prepare_features(self, df):
-        """Prepare features for Bi-LSTM model training."""
-        if df.empty:
-            return None, None, None
-        
-        # Extract temporal features
-        df['hour'] = df['datetime'].dt.hour
-        df['day_of_week'] = df['datetime'].dt.dayofweek
-        df['month'] = df['datetime'].dt.month
-        
-        # Features: hour, day_of_week, month, import_kwh, power_factor
-        features = ['hour', 'day_of_week', 'month', 'import_kwh', 'power_factor']
-        X = df[features].fillna(0).values
-        y = df['avg_import_kw'].fillna(0).values
-        
-        # Normalize features
-        X = self.scaler.fit_transform(X) if not hasattr(self.scaler, 'mean_') else self.scaler.transform(X)
-        
-        # Create sequences for Bi-LSTM
-        X_seq, y_seq = self.create_sequences(X, y, self.time_steps)
-        
-        return X_seq, y_seq, df
-
-    def create_sequences(self, X, y, time_steps):
-        """Create sequences for time-series data."""
-        X_seq, y_seq = [], []
-        for i in range(len(X) - time_steps):
-            X_seq.append(X[i:i + time_steps])
-            y_seq.append(y[i + time_steps])
-        if not X_seq:
-            return None, None
-        return np.array(X_seq), np.array(y_seq)
-
-    def train_model(self, X, y, existing_model=None):
-        """Train or incrementally update a Bi-LSTM model."""
-        if X is None or y is None or len(X) < 10:
-            logger.warning("Insufficient data for training")
-            return None, None, None
-        
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        
-        if existing_model:
-            model = existing_model
-            logger.info("Using existing Bi-LSTM model for incremental training")
-        else:
-            model = Sequential([
-                Bidirectional(LSTM(64, return_sequences=False), input_shape=(self.time_steps, X.shape[2])),
-                Dense(32, activation='relu'),
-                Dense(1)
-            ])
-            model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
-            logger.info("Created new Bi-LSTM model")
-        
-        # Train model
-        early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-        history = model.fit(
-            X_train, y_train,
-            epochs=50,
-            batch_size=32,
-            validation_split=0.2,
-            callbacks=[early_stopping],
-            verbose=0
-        )
-        
-        # Evaluate model
-        y_pred = model.predict(X_test, verbose=0)
-        mse = mean_squared_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-        
-        logger.info(f"Model training completed (MSE: {mse:.4f}, R2: {r2:.4f})")
-        return model, mse, r2
-
-    def serialize_model(self, model):
-        """Serialize the Bi-LSTM model to a binary format using .keras format."""
+    def preprocess_data(self, df: pd.DataFrame) -> tuple[np.ndarray, StandardScaler]:
         try:
-            # Create a temporary file to save the model in .keras format
-            with tempfile.NamedTemporaryFile(suffix='.keras', delete=False) as tmp_file:
-                model.save(tmp_file.name)  # Save model to temporary .keras file
-                tmp_file_path = tmp_file.name
-            
-            # Read the .keras file into a BytesIO buffer
-            with open(tmp_file_path, 'rb') as f:
-                buffer = BytesIO(f.read())
-            
-            # Clean up the temporary file
-            os.unlink(tmp_file_path)
-            
-            buffer.seek(0)
-            return buffer.getvalue()
+            features = ['avg_import_kw', 'power_factor', 
+                        'phase_a_current', 'phase_a_voltage',
+                        'phase_b_current', 'phase_b_voltage',
+                        'phase_c_current', 'phase_c_voltage']
+            df = df[features].ffill().infer_objects(copy=False).fillna(0)
+            scaler = StandardScaler()
+            scaled_data = scaler.fit_transform(df)
+            logger.info("Data preprocessed successfully")
+            return scaled_data, scaler
         except Exception as e:
-            logger.error(f"Failed to serialize model: {e}")
+            logger.error(f"Failed to preprocess data: {e}")
             raise
 
-    def deserialize_model(self, model_data):
-        """Deserialize the Bi-LSTM model from binary format."""
+    def load_existing_model(self, customer_ref: int) -> tuple[nn.Module, float, float]:
         try:
-            # Write binary data to a temporary .keras file
-            with tempfile.NamedTemporaryFile(suffix='.keras', delete=False) as tmp_file:
-                tmp_file.write(model_data)
-                tmp_file_path = tmp_file.name
-            
-            # Load model from the temporary .keras file
-            model = load_model(tmp_file_path)
-            
-            # Clean up the temporary file
-            os.unlink(tmp_file_path)
-            
-            return model
-        except Exception as e:
-            logger.error(f"Failed to deserialize model: {e}")
-            raise
-        
-    def store_model(self, customer_ref, model, mse, r2):
-        """Store the trained model in the customer_model table."""
-        if model is None:
-            logger.warning(f"No model to store for customer {customer_ref}")
-            return
-        
-        model_data = self.serialize_model(model)
-        
-        query = """
-        INSERT INTO customer_model (customer_ref, model_data, trained_at, mse, r2_score)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (customer_ref)
-        DO UPDATE SET
-            model_data = EXCLUDED.model_data,
-            trained_at = EXCLUDED.trained_at,
-            mse = EXCLUDED.mse,
-            r2_score = EXCLUDED.r2_score,
-            updated_at = CURRENT_TIMESTAMP;
-        """
-        params = (customer_ref, psycopg2.Binary(model_data), datetime.now(), mse, r2)
-        
-        try:
-            self.cur.execute(query, params)
-            self.conn.commit()
-            logger.info(f"Stored model for customer {customer_ref} (MSE: {mse:.4f}, R2: {r2:.4f})")
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Failed to store model for customer {customer_ref}: {e}")
-            raise
-
-    def get_customers(self):
-        """Fetch all customer references."""
-        query = "SELECT customer_ref FROM customer;"
-        try:
-            self.cur.execute(query)
-            customers = [row[0] for row in self.cur.fetchall()]
-            logger.info(f"Found {len(customers)} customers")
-            return customers
-        except Exception as e:
-            logger.error(f"Failed to fetch customers: {e}")
-            raise
-
-    def check_new_data(self, customer_ref):
-        """Check for new data since the last model training."""
-        query = """
-        SELECT MAX(timestamp)
-        FROM measurement m
-        JOIN meter mt ON m.serial = mt.serial
-        WHERE mt.customer_ref = %s;
-        """
-        self.cur.execute(query, (customer_ref,))
-        max_timestamp = self.cur.fetchone()[0]
-        
-        last_trained = self.last_processed_timestamp.get(customer_ref, 0)
-        if max_timestamp and max_timestamp > last_trained:
-            logger.info(f"New data detected for customer {customer_ref} (max timestamp: {max_timestamp})")
-            return max_timestamp
-        return None
-
-    def retrieve_model(self, customer_ref):
-        """Retrieve the stored model for a customer."""
-        query = """
-        SELECT model_data, mse, r2_score, trained_at
-        FROM customer_model
-        WHERE customer_ref = %s;
-        """
-        try:
-            self.cur.execute(query, (customer_ref,))
+            self.cur.execute("""
+                SELECT model_data, mse, r2_score
+                FROM customer_model
+                WHERE customer_ref = %s
+            """, (customer_ref,))
             result = self.cur.fetchone()
+            
             if result:
-                model_data, mse, r2, trained_at = result
-                model = self.deserialize_model(model_data)
-                logger.info(f"Retrieved model for customer {customer_ref} (trained at: {trained_at})")
-                return model, mse, r2, trained_at
-            logger.warning(f"No model found for customer {customer_ref}")
-            return None, None, None, None
+                model_data, mse, r2_score = result
+                model = BiLSTM(input_size=8)
+                buffer = io.BytesIO(model_data)
+                model = torch.jit.load(buffer)
+                logger.info(f"Loaded existing model for customer {customer_ref}")
+                return model, mse, r2_score
+            logger.info(f"No existing model for customer {customer_ref}")
+            return None, None, None
         except Exception as e:
-            logger.error(f"Failed to retrieve model for customer {customer_ref}: {e}")
+            logger.error(f"Error loading model for customer {customer_ref}: {e}")
             raise
 
-    def analyze_customer_behavior(self, customer_ref):
-        """Analyze customer behavior, return key metrics, and save to CSV."""
-        df = self.fetch_customer_data(customer_ref)
-        if df.empty:
-            logger.warning(f"No data available for customer {customer_ref}")
-            return None
-
-        metrics = {
-            'max_usage_kw': df['avg_import_kw'].max(),
-            'min_usage_kw': df['avg_import_kw'].min(),
-            'avg_usage_kw': df['avg_import_kw'].mean(),
-            'total_kwh': df['import_kwh'].sum(),
-            'peak_hour': df.groupby(df['datetime'].dt.hour)['avg_import_kw'].mean().idxmax(),
-            'avg_power_factor': df['power_factor'].mean(),
-            'usage_std': df['avg_import_kw'].std()
-        }
-        
-        metrics_summary = "\n".join([f"  {key}: {value:.4f}" if isinstance(value, (int, float)) else f"  {key}: {value}" 
-                                    for key, value in metrics.items()])
-        logger.info(f"Behavior metrics for customer {customer_ref}:\n{metrics_summary}")
-
-        customer_dir = os.path.join(self.output_base_dir, str(customer_ref))
-        if not os.path.exists(customer_dir):
-            os.makedirs(customer_dir)
-            logger.info(f"Created directory for customer {customer_ref}: {customer_dir}")
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'metrics_{timestamp}.csv'
-        metrics_path = os.path.join(customer_dir, filename)
-
+    def train_model(self, model: nn.Module, train_loader: DataLoader, 
+                    val_loader: DataLoader, num_epochs: int = 10) -> tuple[nn.Module, float, float]:
         try:
-            metrics_df = pd.DataFrame([metrics])
-            metrics_df.to_csv(metrics_path, index=False)
-            logger.info(f"Saved metrics to {metrics_path}")
+            criterion = nn.MSELoss()
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model = model.to(device)
+            
+            for epoch in range(num_epochs):
+                model.train()
+                train_loss = 0
+                for batch_x, batch_y in train_loader:
+                    batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                    optimizer.zero_grad()
+                    outputs = model(batch_x)
+                    loss = criterion(outputs, batch_y)
+                    loss.backward()
+                    optimizer.step()
+                    train_loss += loss.item() * batch_x.size(0)
+                
+                model.eval()
+                val_loss = 0
+                predictions, actuals = [], []
+                with torch.no_grad():
+                    for batch_x, batch_y in val_loader:
+                        batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                        outputs = model(batch_x)
+                        val_loss += criterion(outputs, batch_y).item() * batch_x.size(0)
+                        predictions.extend(outputs.cpu().numpy().flatten())
+                        actuals.extend(batch_y.cpu().numpy().flatten())
+                
+                logger.info(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss/len(train_loader.dataset):.4f}, '
+                           f'Val Loss: {val_loss/len(val_loader.dataset):.4f}')
+            
+            predictions = np.array(predictions)
+            actuals = np.array(actuals)
+            mse = val_loss / len(val_loader.dataset)
+            r2_score = 1 - np.sum((actuals - predictions)**2) / np.sum((actuals - np.mean(actuals))**2)
+            logger.info(f"Model training completed. MSE: {mse:.4f}, R2 Score: {r2_score:.4f}")
+            return model, mse, r2_score
         except Exception as e:
-            logger.error(f"Failed to save metrics for customer {customer_ref}: {e}")
+            logger.error(f"Failed to train model: {e}")
+            raise
 
-        return metrics
+    def predict_next_timestep(self, model: nn.Module, last_sequence: np.ndarray, 
+                            scaler: StandardScaler) -> float:
+        try:
+            model.eval()
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            input_tensor = torch.FloatTensor(last_sequence).unsqueeze(0).to(device)
+            
+            with torch.no_grad():
+                prediction = model(input_tensor)
+            
+            prediction = prediction.cpu().numpy()
+            dummy_array = np.zeros((1, len(scaler.mean_)))
+            dummy_array[0, 0] = prediction[0, 0]
+            prediction_transformed = scaler.inverse_transform(dummy_array)[0, 0]
+            prediction_value = max(0, prediction_transformed)
+            logger.info(f"Predicted avg_import_kw: {prediction_value:.4f} kW")
+            return prediction_value
+        except Exception as e:
+            logger.error(f"Failed to make prediction: {e}")
+            raise
 
-    def plot_usage_patterns(self, customer_ref, save_path=None):
-        """Plot customer usage patterns and save with timestamp."""
-        df = self.fetch_customer_data(customer_ref)
-        if df.empty:
-            logger.warning(f"No data to plot for customer {customer_ref}")
-            return None
+    def create_prediction_plot(self, df: pd.DataFrame, prediction: float, customer_ref: int, sequence_length: int):
+        try:
+            output_dir = os.path.join(self.output_base_dir, f"customer_{customer_ref}")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            plt.figure(figsize=(10, 5))
+            last_n = df.tail(sequence_length)
+            timestamps = last_n['timestamp']
+            actual_kw = last_n['avg_import_kw']
+            
+            last_timestamp = timestamps.iloc[-1]
+            next_timestamp = last_timestamp + timedelta(minutes=15)
+            extended_timestamps = pd.concat([pd.Series(timestamps), pd.Series([next_timestamp])], ignore_index=True)
+            extended_kw = np.append(actual_kw.values, prediction)
+            
+            plt.plot(extended_timestamps, extended_kw, 'b-', label='Actual + Predicted')
+            plt.axvline(x=last_timestamp, color='r', linestyle='--', label='Prediction Point')
+            plt.title(f'Customer {customer_ref} - Power Consumption Prediction')
+            plt.xlabel('Timestamp')
+            plt.ylabel('Power (kW)')
+            plt.grid(True)
+            plt.legend()
+            plt.xticks(rotation=45)
+            
+            output_path = os.path.join(output_dir, f'prediction_{customer_ref}_{datetime.now(pytz.UTC).strftime("%Y%m%d_%H%M%S")}.png')
+            plt.savefig(output_path, bbox_inches='tight')
+            plt.close()
+            logger.info(f"Saved plot at: {output_path}")
+            return output_path
+        except Exception as e:
+            logger.error(f"Failed to create plot: {e}")
+            raise
 
-        plt.figure(figsize=(12, 6))
-        hourly_usage = df.groupby(df['datetime'].dt.hour)['avg_import_kw'].mean()
-        plt.plot(hourly_usage.index, hourly_usage.values, 'b-', label='Average kW')
-        
-        plt.title(f'Customer {customer_ref} - Hourly Usage Pattern')
-        plt.xlabel('Hour of Day')
-        plt.ylabel('Average Import (kW)')
-        plt.grid(True)
-        plt.legend()
-        
-        customer_dir = os.path.join(self.output_base_dir, str(customer_ref))
-        if not os.path.exists(customer_dir):
-            os.makedirs(customer_dir)
-            logger.info(f"Created directory for customer {customer_ref}: {customer_dir}")
+    def save_model(self, model: nn.Module, customer_ref: int, mse: float, r2_score: float):
+        try:
+            buffer = io.BytesIO()
+            torch.jit.save(torch.jit.script(model), buffer)
+            model_data = buffer.getvalue()
+            mse = float(mse)
+            r2_score = float(r2_score)
+            
+            self.cur.execute("""
+                INSERT INTO customer_model (customer_ref, model_data, mse, r2_score)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (customer_ref) DO UPDATE 
+                SET model_data = EXCLUDED.model_data,
+                    mse = EXCLUDED.mse,
+                    r2_score = EXCLUDED.r2_score,
+                    trained_at = CURRENT_TIMESTAMP
+            """, (customer_ref, psycopg2.Binary(model_data), mse, r2_score))
+            self.conn.commit()
+            logger.info(f"Saved model for customer {customer_ref}")
+        except Exception as e:
+            logger.error(f"Error saving model for customer {customer_ref}: {e}")
+            raise
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f'usage_pattern_{timestamp}.png'
-        save_path = os.path.join(customer_dir, filename)
-        
-        plt.savefig(save_path)
-        logger.info(f"Saved usage pattern plot to {save_path}")
-        plt.close()
-        return save_path
+    def process_customer(self, customer_ref: int, sequence_length: int = 96, batch_size: int = 32) -> tuple[float, str]:
+        try:
+            logger.info(f"Processing customer {customer_ref}")
+            df = self.fetch_data(customer_ref)
+            if len(df) < sequence_length:
+                logger.warning(f"Insufficient data for customer {customer_ref}")
+                return None, None
+            
+            scaled_data, scaler = self.preprocess_data(df)
+            dataset = ElectricityDataset(scaled_data, sequence_length)
+            train_size = int(0.8 * len(dataset))
+            val_size = len(dataset) - train_size
+            train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=batch_size)
+            
+            model, prev_mse, prev_r2 = self.load_existing_model(customer_ref)
+            if model is None:
+                model = BiLSTM(input_size=8)
+                logger.info(f"Created new Bi-LSTM model for customer {customer_ref}")
+            
+            model, mse, r2_score = self.train_model(model, train_loader, val_loader)
+            last_sequence = scaled_data[-sequence_length:]
+            prediction = self.predict_next_timestep(model, last_sequence, scaler)
+            plot_path = self.create_prediction_plot(df, prediction, customer_ref, sequence_length)
+            self.save_model(model, customer_ref, mse, r2_score)
+            
+            return prediction, plot_path
+        except Exception as e:
+            logger.error(f"Failed to process customer {customer_ref}: {e}")
+            return None, None
 
-    def plot_feature_importance(self, customer_ref, save_path=None):
-        """Placeholder: Bi-LSTM does not provide feature importance directly."""
-        logger.warning(f"Feature importance not supported for Bi-LSTM for customer {customer_ref}")
-        return None
-
-    def run(self):
-        """Run the customer behavior analysis and model training pipeline."""
-        start_time = datetime.now()
-        logger.info("Starting customer behavior pipeline")
-        
+    def run(self, sequence_length: int = 96, batch_size: int = 32):
         try:
             self.connect_db()
-            customers = self.get_customers()
-            
-            for customer_ref in customers:
-                max_timestamp = self.check_new_data(customer_ref)
-                existing_model, _, _, _ = self.retrieve_model(customer_ref)
-                
-                if max_timestamp:
-                    df = self.fetch_customer_data(customer_ref, self.last_processed_timestamp.get(customer_ref))
-                    X, y, _ = self.prepare_features(df)
-                    model, mse, r2 = self.train_model(X, y, existing_model=existing_model)
-                    self.store_model(customer_ref, model, mse, r2)
-                    self.last_processed_timestamp[customer_ref] = max_timestamp
-                
-                elif not existing_model:
-                    df = self.fetch_customer_data(customer_ref)
-                    X, y, _ = self.prepare_features(df)
-                    model, mse, r2 = self.train_model(X, y)
-                    self.store_model(customer_ref, model, mse, r2)
-                    max_timestamp = df['timestamp'].max() if not df.empty else 0
-                    self.last_processed_timestamp[customer_ref] = max_timestamp
-                
-                else:
-                    logger.info(f"No new data for customer {customer_ref}, existing model found")
-                
-                metrics = self.analyze_customer_behavior(customer_ref)
-                if metrics:
-                    self.plot_usage_patterns(customer_ref)
-                    self.plot_feature_importance(customer_ref)
-            
-            logger.info(f"Pipeline completed in {datetime.now() - start_time}")
-        
+            customer_refs = self.fetch_customer_refs()
+            results = []
+            for customer_ref in customer_refs:
+                prediction, plot_path = self.process_customer(customer_ref, sequence_length, batch_size)
+                if prediction is not None and plot_path is not None:
+                    results.append({
+                        'customer_ref': customer_ref,
+                        'prediction': prediction,
+                        'plot_path': plot_path
+                    })
+                    logger.info(f"Customer {customer_ref}: Prediction: {prediction:.4f} kW, Plot: {plot_path}")
+            return results
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
             raise
-        
         finally:
             self.close_db()
 
 if __name__ == "__main__":
     pipeline = CustomerBehaviorPipeline()
-    pipeline.run()
+    results = pipeline.run()
+    for result in results:
+        logger.info(f"Customer {result['customer_ref']}: Predicted avg_import_kw: {result['prediction']:.4f} kW, Plot: {result['plot_path']}")

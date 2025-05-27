@@ -9,12 +9,14 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+now = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('data_insertion.log'),
+        logging.FileHandler(f'data_insertion_{now}.log'),
         logging.StreamHandler()
     ]
 )
@@ -118,7 +120,7 @@ class LoadProfilePipeline:
         """Insert measurement data into the measurement table."""
         # Select relevant columns and handle NULLs
         measurement_cols = [
-            'SERIAL', 'TIMESTAMP', 'OBIS', 'AVG._IMPORT_KW (kW)', 'IMPORT_KWH (kWh)',
+            'SERIAL', 'DATE', 'TIME', 'OBIS', 'AVG._IMPORT_KW (kW)', 'IMPORT_KWH (kWh)',
             'AVG._EXPORT_KW (kW)', 'EXPORT_KWH (kWh)', 'AVG._IMPORT_KVA (kVA)',
             'AVG._EXPORT_KVA (kVA)', 'IMPORT_KVARH (kvarh)', 'EXPORT_KVARH (kvarh)',
             'POWER_FACTOR', 'AVG._CURRENT (V)', 'AVG._VOLTAGE (V)'
@@ -127,16 +129,27 @@ class LoadProfilePipeline:
         
         # Rename columns to match database
         df_measurements.columns = [
-            'serial', 'timestamp', 'obis', 'avg_import_kw', 'import_kwh',
+            'serial', 'date', 'time', 'obis', 'avg_import_kw', 'import_kwh',
             'avg_export_kw', 'export_kwh', 'avg_import_kva', 'avg_export_kva',
             'import_kvarh', 'export_kvarh', 'power_factor', 'avg_current', 'avg_voltage'
         ]
         
+        # Combine DATE and TIME into a datetime column
+        df_measurements['timestamp'] = pd.to_datetime(
+            df_measurements['date'] + ' ' + df_measurements['time'],
+            format='%Y-%m-%d %H:%M:%S',
+            errors='coerce'
+        )
+        
+        # Drop rows where timestamp could not be parsed
+        invalid_rows = df_measurements[df_measurements['timestamp'].isna()]
+        if not invalid_rows.empty:
+            logger.warning(f"Dropped {len(invalid_rows)} rows due to invalid DATE/TIME format")
+            df_measurements = df_measurements.dropna(subset=['timestamp'])
+        
         # Convert data types and handle NULLs
         df_measurements['serial'] = df_measurements['serial'].astype(int)
-        df_measurements['timestamp'] = df_measurements['timestamp'].astype(int)
         df_measurements['obis'] = df_measurements['obis'].astype(str)
-
         df_measurements['power_factor'] = df_measurements['power_factor'].clip(lower=-1, upper=1)
         
         measurement_data = [
@@ -180,10 +193,23 @@ class LoadProfilePipeline:
         """Insert phase-specific measurements into the phase_measurement table."""
         phase_data = []
         
+        # Combine DATE and TIME into a datetime for timestamp
+        df['timestamp'] = pd.to_datetime(
+            df['DATE'] + ' ' + df['TIME'],
+            format='%Y-%m-%d %H:%M:%S',
+            errors='coerce'
+        )
+        
+        # Drop rows where timestamp could not be parsed
+        invalid_rows = df[df['timestamp'].isna()]
+        if not invalid_rows.empty:
+            logger.warning(f"Dropped {len(invalid_rows)} rows due to invalid DATE/TIME format in phase measurements")
+            df = df.dropna(subset=['timestamp'])
+        
         # Process Phase A, B, C measurements
         for _, row in df.iterrows():
             serial = int(row['SERIAL'])
-            timestamp = int(row['TIMESTAMP'])
+            timestamp = row['timestamp']
             
             # Phase A
             if pd.notnull(row['PHASE_A_INST._CURRENT (A)']) or pd.notnull(row['PHASE_A_INST._VOLTAGE (V)']) or pd.notnull(row['INST._POWER_FACTOR']):
@@ -260,7 +286,8 @@ class LoadProfilePipeline:
 
 if __name__ == "__main__":
     # Path to data file
-    file_path = r"AZ1088 Load Profiles.xlsx"
+    # file_path = r"LOAD_PROFILE_HISTORICAL_READINGS_INVENTORY_24_04_2025 - February AZ108.csv"
+    file_path = r"LOAD_PROFILE_HISTORICAL_READINGS_INVENTORY_24_04_2025 - March.csv"
     
     # Validate file existence
     if not os.path.exists(file_path):

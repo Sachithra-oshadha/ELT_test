@@ -12,6 +12,7 @@ import io
 import logging
 from dotenv import load_dotenv
 import pytz
+import json
 
 # Load environment variables
 load_dotenv()
@@ -119,7 +120,24 @@ class CustomerBehaviorPipeline:
                 ORDER BY m.timestamp
             """
             df = pd.read_sql(query, self.conn, params=(customer_ref,))
-            logger.info(f"Fetched {len(df)} records for customer {customer_ref}")
+            # Convert and validate timestamps
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            # Drop rows with invalid timestamps
+            if df['timestamp'].isnull().any():
+                logger.warning(f"Dropped {df['timestamp'].isnull().sum()} rows with invalid timestamps for customer {customer_ref}")
+                df = df.dropna(subset=['timestamp'])
+            # Strip timezone to make timestamps naive
+            if df['timestamp'].dt.tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+                logger.info(f"Converted timezone-aware timestamps to naive for customer {customer_ref}")
+            # Ensure timestamps are in 15-minute intervals
+            df['timestamp'] = df['timestamp'].dt.round('15min')
+            # Filter out unreasonable timestamps (e.g., before 2000 or after 2030)
+            valid_time_range = (df['timestamp'] >= '2000-01-01') & (df['timestamp'] <= '2030-12-31')
+            if not valid_time_range.all():
+                logger.warning(f"Dropped {len(df[~valid_time_range])} rows with out-of-range timestamps for customer {customer_ref}")
+                df = df[valid_time_range]
+            logger.info(f"Fetched {len(df)} valid records for customer {customer_ref} at 15-minute intervals")
             return df
         except Exception as e:
             logger.error(f"Error fetching data for customer {customer_ref}: {e}")
@@ -163,14 +181,23 @@ class CustomerBehaviorPipeline:
             raise
 
     def train_model(self, model: nn.Module, train_loader: DataLoader, 
-                    val_loader: DataLoader, num_epochs: int = 10) -> tuple[nn.Module, float, float]:
+                    val_loader: DataLoader, num_epochs: int = 10, patience: int = 3) -> tuple[nn.Module, float, float]:
         try:
             criterion = nn.MSELoss()
             optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             model = model.to(device)
+
+            best_val_loss = float('inf')
+            best_model_state = None
+            epochs_no_improve = 0
+            early_stop = False
             
             for epoch in range(num_epochs):
+                if early_stop:
+                    logger.info(f"Early stopping triggered at epoch {epoch}")
+                    break
+
                 model.train()
                 train_loss = 0
                 for batch_x, batch_y in train_loader:
@@ -193,13 +220,33 @@ class CustomerBehaviorPipeline:
                         predictions.extend(outputs.cpu().numpy().flatten())
                         actuals.extend(batch_y.cpu().numpy().flatten())
                 
-                logger.info(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss/len(train_loader.dataset):.4f}, '
-                           f'Val Loss: {val_loss/len(val_loader.dataset):.4f}')
+                val_loss = val_loss / len(val_loader.dataset)
+                train_loss = train_loss / len(train_loader.dataset)
+                
+                logger.info(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
             
-            predictions = np.array(predictions)
-            actuals = np.array(actuals)
-            mse = val_loss / len(val_loader.dataset)
-            r2_score = 1 - np.sum((actuals - predictions)**2) / np.sum((actuals - np.mean(actuals))**2)
+                # Early stopping logic
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_model_state = model.state_dict()
+                    epochs_no_improve = 0
+                    logger.info(f"New best validation loss: {best_val_loss:.4f}")
+                else:
+                    epochs_no_improve += 1
+                    if epochs_no_improve >= patience:
+                        early_stop = True
+                        logger.info(f"No improvement in validation loss for {patience} epochs")
+                
+                predictions = np.array(predictions)
+                actuals = np.array(actuals)
+                mse = val_loss
+                r2_score = 1 - np.sum((actuals - predictions)**2) / np.sum((actuals - np.mean(actuals, axis=0))**2)
+
+            # Load the best model state
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state)
+                logger.info(f"Restored best model with validation loss: {best_val_loss:.4f}")
+            
             logger.info(f"Model training completed. MSE: {mse:.4f}, R2 Score: {r2_score:.4f}")
             return model, mse, r2_score
         except Exception as e:
@@ -221,7 +268,7 @@ class CustomerBehaviorPipeline:
             dummy_array[0, 0] = prediction[0, 0]
             prediction_transformed = scaler.inverse_transform(dummy_array)[0, 0]
             prediction_value = max(0, prediction_transformed)
-            logger.info(f"Predicted avg_import_kw: {prediction_value:.4f} kW")
+            logger.info(f"Predicted avg_import_kw for next 15-minute interval: {prediction_value:.4f} kW")
             return prediction_value
         except Exception as e:
             logger.error(f"Failed to make prediction: {e}")
@@ -232,32 +279,66 @@ class CustomerBehaviorPipeline:
             output_dir = os.path.join(self.output_base_dir, f"customer_{customer_ref}")
             os.makedirs(output_dir, exist_ok=True)
             
-            plt.figure(figsize=(10, 5))
+            plt.figure(figsize=(12, 6))
             last_n = df.tail(sequence_length)
-            timestamps = last_n['timestamp']
+            timestamps = last_n['timestamp']  # Already datetime and timezone-naive from fetch_data
             actual_kw = last_n['avg_import_kw']
+            
+            if timestamps.empty:
+                raise ValueError(f"No valid timestamps available for customer {customer_ref}")
             
             last_timestamp = timestamps.iloc[-1]
             next_timestamp = last_timestamp + timedelta(minutes=15)
-            extended_timestamps = pd.concat([pd.Series(timestamps), pd.Series([next_timestamp])], ignore_index=True)
+            extended_timestamps = pd.Series([*timestamps, next_timestamp])
             extended_kw = np.append(actual_kw.values, prediction)
             
-            plt.plot(extended_timestamps, extended_kw, 'b-', label='Actual + Predicted')
+            logger.debug(f"Timestamp range: {extended_timestamps.min()} to {extended_timestamps.max()}")
+            
+            plt.plot(extended_timestamps, extended_kw, 'b-', label='Actual + Predicted (15-min intervals)')
+            plt.plot(extended_timestamps.iloc[-1], extended_kw[-1], 'ro', label='Predicted Value')
             plt.axvline(x=last_timestamp, color='r', linestyle='--', label='Prediction Point')
-            plt.title(f'Customer {customer_ref} - Power Consumption Prediction')
+            plt.title(f'Customer {customer_ref} - Power Consumption Prediction (15-min intervals)')
             plt.xlabel('Timestamp')
             plt.ylabel('Power (kW)')
             plt.grid(True)
             plt.legend()
             plt.xticks(rotation=45)
             
+            # Set date formatter
+            plt.gca().xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%Y-%m-%d %H:%M'))
+            # Use AutoDateLocator to automatically choose appropriate tick intervals
+            plt.gca().xaxis.set_major_locator(plt.matplotlib.dates.AutoDateLocator(interval_multiples=True))
+            # Limit x-axis to a reasonable range (e.g., last 24 hours + 15 minutes)
+            plt.gca().set_xlim([last_timestamp - timedelta(hours=24), next_timestamp])
+            
             output_path = os.path.join(output_dir, f'prediction_{customer_ref}_{datetime.now(pytz.UTC).strftime("%Y%m%d_%H%M%S")}.png')
             plt.savefig(output_path, bbox_inches='tight')
             plt.close()
-            logger.info(f"Saved plot at: {output_path}")
+            logger.info(f"Saved 15-minute interval plot at: {output_path}")
             return output_path
         except Exception as e:
-            logger.error(f"Failed to create plot: {e}")
+            logger.error(f"Failed to create plot for customer {customer_ref}: {e}")
+            raise
+
+    def save_prediction_to_json(self, customer_ref: int, prediction: float, timestamp: datetime):
+        try:
+            output_dir = os.path.join(self.output_base_dir, f"customer_{customer_ref}")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            prediction_data = {
+                "customer_ref": customer_ref,
+                "predicted_avg_import_kw": float(prediction),
+                "prediction_timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                "generated_at": datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S %Z")
+            }
+            
+            json_path = os.path.join(output_dir, f'prediction_{customer_ref}_{datetime.now(pytz.UTC).strftime("%Y%m%d_%H%M%S")}.json')
+            with open(json_path, 'w') as f:
+                json.dump(prediction_data, f, indent=4)
+            logger.info(f"Saved prediction JSON for customer {customer_ref} at: {json_path}")
+            return json_path
+        except Exception as e:
+            logger.error(f"Failed to save prediction JSON for customer {customer_ref}: {e}")
             raise
 
     def save_model(self, model: nn.Module, customer_ref: int, mse: float, r2_score: float):
@@ -283,13 +364,13 @@ class CustomerBehaviorPipeline:
             logger.error(f"Error saving model for customer {customer_ref}: {e}")
             raise
 
-    def process_customer(self, customer_ref: int, sequence_length: int = 96, batch_size: int = 32) -> tuple[float, str]:
+    def process_customer(self, customer_ref: int, sequence_length: int = 96, batch_size: int = 32) -> tuple[float, str, str]:
         try:
-            logger.info(f"Processing customer {customer_ref}")
+            logger.info(f"Processing customer {customer_ref} for 15-minute interval prediction")
             df = self.fetch_data(customer_ref)
             if len(df) < sequence_length:
                 logger.warning(f"Insufficient data for customer {customer_ref}")
-                return None, None
+                return None, None, None
             
             scaled_data, scaler = self.preprocess_data(df)
             dataset = ElectricityDataset(scaled_data, sequence_length)
@@ -307,13 +388,16 @@ class CustomerBehaviorPipeline:
             model, mse, r2_score = self.train_model(model, train_loader, val_loader)
             last_sequence = scaled_data[-sequence_length:]
             prediction = self.predict_next_timestep(model, last_sequence, scaler)
+            last_timestamp = df['timestamp'].iloc[-1]
+            next_timestamp = last_timestamp + timedelta(minutes=15)
             plot_path = self.create_prediction_plot(df, prediction, customer_ref, sequence_length)
+            json_path = self.save_prediction_to_json(customer_ref, prediction, next_timestamp)
             self.save_model(model, customer_ref, mse, r2_score)
             
-            return prediction, plot_path
+            return prediction, plot_path, json_path
         except Exception as e:
             logger.error(f"Failed to process customer {customer_ref}: {e}")
-            return None, None
+            return None, None, None
 
     def run(self, sequence_length: int = 96, batch_size: int = 32):
         try:
@@ -321,14 +405,16 @@ class CustomerBehaviorPipeline:
             customer_refs = self.fetch_customer_refs()
             results = []
             for customer_ref in customer_refs:
-                prediction, plot_path = self.process_customer(customer_ref, sequence_length, batch_size)
-                if prediction is not None and plot_path is not None:
+                prediction, plot_path, json_path = self.process_customer(customer_ref, sequence_length, batch_size)
+                if prediction is not None and plot_path is not None and json_path is not None:
                     results.append({
                         'customer_ref': customer_ref,
                         'prediction': prediction,
-                        'plot_path': plot_path
+                        'plot_path': plot_path,
+                        'json_path': json_path
                     })
-                    logger.info(f"Customer {customer_ref}: Prediction: {prediction:.4f} kW, Plot: {plot_path}")
+                    logger.info(f"Customer {customer_ref}: Prediction for next 15-minute interval: {prediction:.4f} kW, "
+                               f"Plot: {plot_path}, JSON: {json_path}")
             return results
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
@@ -340,4 +426,5 @@ if __name__ == "__main__":
     pipeline = CustomerBehaviorPipeline()
     results = pipeline.run()
     for result in results:
-        logger.info(f"Customer {result['customer_ref']}: Predicted avg_import_kw: {result['prediction']:.4f} kW, Plot: {result['plot_path']}")
+        logger.info(f"Customer {result['customer_ref']}: Predicted avg_import_kw for next 15-minute interval: "
+                   f"{result['prediction']:.4f} kW, Plot: {result['plot_path']}, JSON: {result['json_path']}")

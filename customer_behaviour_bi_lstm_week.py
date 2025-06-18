@@ -12,6 +12,7 @@ import io
 import logging
 from dotenv import load_dotenv
 import pytz
+import json
 
 # Load environment variables
 load_dotenv()
@@ -122,7 +123,24 @@ class CustomerBehaviorPipeline:
                 ORDER BY m.timestamp
             """
             df = pd.read_sql(query, self.conn, params=(customer_ref,))
-            logger.info(f"Fetched {len(df)} records for customer {customer_ref}")
+            # Convert and validate timestamps
+            df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            # Drop rows with invalid timestamps
+            if df['timestamp'].isnull().any():
+                logger.warning(f"Dropped {df['timestamp'].isnull().sum()} rows with invalid timestamps for customer {customer_ref}")
+                df = df.dropna(subset=['timestamp'])
+            # Strip timezone to make timestamps naive
+            if df['timestamp'].dt.tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+                logger.info(f"Converted timezone-aware timestamps to naive for customer {customer_ref}")
+            # Ensure timestamps are in 15-minute intervals
+            df['timestamp'] = df['timestamp'].dt.round('15min')
+            # Filter out unreasonable timestamps (e.g., before 2000 or after 2030)
+            valid_time_range = (df['timestamp'] >= '2000-01-01') & (df['timestamp'] <= '2030-12-31')
+            if not valid_time_range.all():
+                logger.warning(f"Dropped {len(df[~valid_time_range])} rows with out-of-range timestamps for customer {customer_ref}")
+                df = df[valid_time_range]
+            logger.info(f"Fetched {len(df)} valid records for customer {customer_ref} at 15-minute intervals")
             return df
         except Exception as e:
             logger.error(f"Error fetching data for customer {customer_ref}: {e}")
@@ -267,32 +285,70 @@ class CustomerBehaviorPipeline:
             
             plt.figure(figsize=(12, 6))
             last_n = df.tail(sequence_length)
-            timestamps = last_n['timestamp']
+            timestamps = last_n['timestamp']  # Already datetime and timezone-naive from fetch_data
             actual_kw = last_n['avg_import_kw']
+            
+            if timestamps.empty:
+                raise ValueError(f"No valid timestamps available for customer {customer_ref}")
             
             last_timestamp = timestamps.iloc[-1]
             # Create timestamps for the next week (672 timesteps, 15-minute intervals)
-            prediction_timestamps = [last_timestamp + timedelta(minutes=15 * i) for i in range(1, len(predictions) + 1)]
+            prediction_timestamps = pd.Series([last_timestamp + timedelta(minutes=15 * i) for i in range(1, len(predictions) + 1)])
+            
+            logger.debug(f"Timestamp range: {timestamps.min()} to {prediction_timestamps.max()}")
             
             # Plot actual data
-            plt.plot(timestamps, actual_kw, 'b-', label='Actual')
+            plt.plot(timestamps, actual_kw, 'b-', label='Actual (15-min intervals)')
             # Plot predicted sequence
-            plt.plot(prediction_timestamps, predictions, 'g--', label='Predicted')
+            plt.plot(prediction_timestamps, predictions, 'g--', label='Predicted (15-min intervals)')
             plt.axvline(x=last_timestamp, color='r', linestyle='--', label='Prediction Point')
-            plt.title(f'Customer {customer_ref} - Weekly Power Consumption Prediction')
+            plt.title(f'Customer {customer_ref} - Weekly Power Consumption Prediction (15-min intervals)')
             plt.xlabel('Timestamp')
             plt.ylabel('Power (kW)')
             plt.grid(True)
             plt.legend()
             plt.xticks(rotation=45)
             
+            # Set date formatter
+            plt.gca().xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%Y-%m-%d %H:%M'))
+            # Use AutoDateLocator to automatically choose appropriate tick intervals
+            plt.gca().xaxis.set_major_locator(plt.matplotlib.dates.AutoDateLocator(interval_multiples=True))
+            # Limit x-axis to show last week of actual data plus predicted week
+            plt.gca().set_xlim([last_timestamp - timedelta(days=7), prediction_timestamps.max()])
+            
             output_path = os.path.join(output_dir, f'weekly_seq_prediction_{customer_ref}_{datetime.now(pytz.UTC).strftime("%Y%m%d_%H%M%S")}.png')
             plt.savefig(output_path, bbox_inches='tight')
             plt.close()
-            logger.info(f"Saved plot at: {output_path}")
+            logger.info(f"Saved weekly prediction plot at: {output_path}")
             return output_path
         except Exception as e:
-            logger.error(f"Failed to create plot: {e}")
+            logger.error(f"Failed to create plot for customer {customer_ref}: {e}")
+            raise
+
+    def save_prediction_to_json(self, customer_ref: int, predictions: np.ndarray, start_timestamp: datetime):
+        try:
+            output_dir = os.path.join(self.output_base_dir, f"customer_{customer_ref}")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Create list of prediction entries with timestamps
+            prediction_data = {
+                "customer_ref": customer_ref,
+                "predicted_avg_import_kw": [
+                    {
+                        "timestamp": (start_timestamp + timedelta(minutes=15 * i)).strftime("%Y-%m-%d %H:%M:%S"),
+                        "value": float(predictions[i])
+                    } for i in range(len(predictions))
+                ],
+                "generated_at": datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S %Z")
+            }
+            
+            json_path = os.path.join(output_dir, f'weekly_prediction_{customer_ref}_{datetime.now(pytz.UTC).strftime("%Y%m%d_%H%M%S")}.json')
+            with open(json_path, 'w') as f:
+                json.dump(prediction_data, f, indent=4)
+            logger.info(f"Saved weekly prediction JSON for customer {customer_ref} at: {json_path}")
+            return json_path
+        except Exception as e:
+            logger.error(f"Failed to save prediction JSON for customer {customer_ref}: {e}")
             raise
 
     def save_model(self, model: nn.Module, customer_ref: int, mse: float, r2_score: float):
@@ -318,13 +374,13 @@ class CustomerBehaviorPipeline:
             logger.error(f"Error saving model for customer {customer_ref}: {e}")
             raise
 
-    def process_customer(self, customer_ref: int, sequence_length: int = 672, batch_size: int = 32) -> tuple[np.ndarray, str]:
+    def process_customer(self, customer_ref: int, sequence_length: int = 672, batch_size: int = 32) -> tuple[np.ndarray, str, str]:
         try:
-            logger.info(f"Processing customer {customer_ref}")
+            logger.info(f"Processing customer {customer_ref} for weekly prediction")
             df = self.fetch_data(customer_ref)
             if len(df) < sequence_length + 672:  # Ensure enough data for sequence + prediction horizon
                 logger.warning(f"Insufficient data for customer {customer_ref}")
-                return None, None
+                return None, None, None
             
             scaled_data, scaler = self.preprocess_data(df)
             dataset = ElectricityDataset(scaled_data, sequence_length)
@@ -342,13 +398,15 @@ class CustomerBehaviorPipeline:
             model, mse, r2_score = self.train_model(model, train_loader, val_loader)
             last_sequence = scaled_data[-sequence_length:]
             predictions = self.predict_next_timestep(model, last_sequence, scaler)
+            last_timestamp = df['timestamp'].iloc[-1]
             plot_path = self.create_prediction_plot(df, predictions, customer_ref, sequence_length)
+            json_path = self.save_prediction_to_json(customer_ref, predictions, last_timestamp + timedelta(minutes=15))
             self.save_model(model, customer_ref, mse, r2_score)
             
-            return predictions, plot_path
+            return predictions, plot_path, json_path
         except Exception as e:
             logger.error(f"Failed to process customer {customer_ref}: {e}")
-            return None, None
+            return None, None, None
 
     def run(self, sequence_length: int = 672, batch_size: int = 32):
         try:
@@ -356,14 +414,16 @@ class CustomerBehaviorPipeline:
             customer_refs = self.fetch_customer_refs()
             results = []
             for customer_ref in customer_refs:
-                predictions, plot_path = self.process_customer(customer_ref, sequence_length, batch_size)
-                if predictions is not None and plot_path is not None:
+                predictions, plot_path, json_path = self.process_customer(customer_ref, sequence_length, batch_size)
+                if predictions is not None and plot_path is not None and json_path is not None:
                     results.append({
                         'customer_ref': customer_ref,
                         'predictions': predictions,
-                        'plot_path': plot_path
+                        'plot_path': plot_path,
+                        'json_path': json_path
                     })
-                    logger.info(f"Customer {customer_ref}: Weekly Prediction Mean: {np.mean(predictions):.4f} kW, Plot: {plot_path}")
+                    logger.info(f"Customer {customer_ref}: Weekly Prediction Mean: {np.mean(predictions):.4f} kW, "
+                               f"Plot: {plot_path}, JSON: {json_path}")
             return results
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
@@ -375,4 +435,5 @@ if __name__ == "__main__":
     pipeline = CustomerBehaviorPipeline()
     results = pipeline.run()
     for result in results:
-        logger.info(f"Customer {result['customer_ref']}: Predicted weekly avg_import_kw mean: {np.mean(result['predictions']):.4f} kW, Plot: {result['plot_path']}")
+        logger.info(f"Customer {result['customer_ref']}: Predicted weekly avg_import_kw mean: "
+                   f"{np.mean(result['predictions']):.4f} kW, Plot: {result['plot_path']}, JSON: {result['json_path']}")

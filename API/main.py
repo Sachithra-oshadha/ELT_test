@@ -19,24 +19,6 @@ async def get_customers():
     finally:
         conn.close()
 
-@app.get("/customer/{customer_ref}", response_model=Dict[str, Any])
-async def get_customer(customer_ref: int):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT customer_ref, created_at, updated_at FROM customer WHERE customer_ref = %s",
-                (customer_ref,)
-            )
-            customer = cur.fetchone()
-            if not customer:
-                raise HTTPException(status_code=404, detail="Customer not found")
-            return customer
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
 # --- Meter Endpoints ---
 @app.get("/meter", response_model=List[Dict[str, Any]])
 async def get_meters():
@@ -64,52 +46,6 @@ async def get_meter(serial: int):
             if not meter:
                 raise HTTPException(status_code=404, detail="Meter not found")
             return meter
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-# --- Measurement Endpoints ---
-@app.get("/measurement", response_model=List[Dict[str, Any]])
-async def get_measurements():
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT serial, timestamp, obis, avg_import_kw, import_kwh, avg_export_kw, 
-                       export_kwh, avg_import_kva, avg_export_kva, import_kvarh, 
-                       export_kvarh, power_factor, avg_current, avg_voltage, created_at 
-                FROM measurement
-            """)
-            measurements = cur.fetchall()
-            return measurements
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-@app.get("/measurement/{serial}/{timestamp}", response_model=Dict[str, Any])
-async def get_measurement(serial: int, timestamp: str):
-    conn = get_db_connection()
-    try:
-        # Parse timestamp string to datetime (assuming ISO format, e.g., '2025-05-22T11:26:00+05:30')
-        try:
-            ts = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid timestamp format. Use ISO format (e.g., '2025-05-22T11:26:00+05:30')")
-        
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT serial, timestamp, obis, avg_import_kw, import_kwh, avg_export_kw, 
-                       export_kwh, avg_import_kva, avg_export_kva, import_kvarh, 
-                       export_kvarh, power_factor, avg_current, avg_voltage, created_at 
-                FROM measurement 
-                WHERE serial = %s AND timestamp = %s
-            """, (serial, ts))
-            measurement = cur.fetchone()
-            if not measurement:
-                raise HTTPException(status_code=404, detail="Measurement not found")
-            return measurement
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
@@ -158,6 +94,70 @@ async def get_phase_measurement(serial: int, timestamp: str, phase: str):
             if not phase_measurement:
                 raise HTTPException(status_code=404, detail="Phase measurement not found")
             return phase_measurement
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+# 14:06 20/06/2025 
+
+# --- Measurement Endpoints ---
+
+# --- Get all measurements for given customer---
+@app.get("/measurement/{customer_ref}", response_model=List[Dict[str, Any]])
+async def get_measurements(customer_ref: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    m.serial,
+                    m.timestamp,
+                    m.import_kwh
+                FROM measurement m
+                INNER JOIN meter mt 
+                    ON m.serial = mt.serial
+                WHERE mt.customer_ref = %s
+            """, (customer_ref,))
+            measurements = cur.fetchall()
+            return measurements
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        conn.close()
+
+# --- Get latest measurement for given customer---
+@app.get("/latest_measurement/{customer_ref}", response_model=Dict[str, Any])
+async def get_measurement(customer_ref: int):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+            WITH latest_meter_readings AS (
+                SELECT 
+                    m.serial,
+                    MAX(m.timestamp) AS latest_timestamp
+                FROM measurement m
+                JOIN meter mt ON m.serial = mt.serial
+                WHERE mt.customer_ref = %s
+                        GROUP BY m.serial
+            ),
+            latest_measurements AS (
+                SELECT 
+                    m.serial,
+                    m.timestamp,
+                    m.import_kwh
+                FROM measurement m
+                INNER JOIN latest_meter_readings lmr 
+                    ON m.serial = lmr.serial AND m.timestamp = lmr.latest_timestamp
+            )
+            SELECT * FROM latest_measurements
+            ORDER BY serial;
+            """, (customer_ref,))
+            measurement = cur.fetchone()
+            if not measurement:
+                raise HTTPException(status_code=404, detail="Measurement not found")
+            return measurement
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:

@@ -36,7 +36,7 @@ COMMENT ON COLUMN meter.customer_ref IS 'Foreign key referencing the customer';
 -- Create Measurement table
 CREATE TABLE measurement (
     serial BIGINT NOT NULL,
-    timestamp BIGINT NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
     obis VARCHAR(10) NOT NULL,
     avg_import_kw NUMERIC(10, 4),
     import_kwh NUMERIC(12, 4),
@@ -52,13 +52,12 @@ CREATE TABLE measurement (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT pk_measurement PRIMARY KEY (serial, timestamp),
     CONSTRAINT fk_meter_serial FOREIGN KEY (serial) REFERENCES meter (serial) ON DELETE CASCADE,
-    CONSTRAINT timestamp_positive CHECK (timestamp > 0),
     CONSTRAINT obis_not_empty CHECK (obis <> ''),
     CONSTRAINT power_factor_range CHECK (power_factor IS NULL OR (power_factor >= -1 AND power_factor <= 1))
 );
 COMMENT ON TABLE measurement IS 'Stores load profile measurements for meters';
 COMMENT ON COLUMN measurement.serial IS 'Foreign key referencing the meter';
-COMMENT ON COLUMN measurement.timestamp IS 'Unix timestamp of the measurement';
+COMMENT ON COLUMN measurement.timestamp IS 'Timestamp of the measurement (datetime)';
 COMMENT ON COLUMN measurement.obis IS 'OBIS code indicating measurement type (e.g., LP for load profile)';
 COMMENT ON COLUMN measurement.avg_import_kw IS 'Average import power in kilowatts';
 COMMENT ON COLUMN measurement.import_kwh IS 'Cumulative import energy in kilowatt-hours';
@@ -67,7 +66,7 @@ COMMENT ON COLUMN measurement.power_factor IS 'Power factor of the measurement (
 -- Create PhaseMeasurement table
 CREATE TABLE phase_measurement (
     serial BIGINT NOT NULL,
-    timestamp BIGINT NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
     phase CHAR(1) NOT NULL CHECK (phase IN ('A', 'B', 'C')),
     inst_current NUMERIC(10, 4),
     inst_voltage NUMERIC(10, 4),
@@ -137,7 +136,7 @@ CREATE VIEW measurement_summary AS
 SELECT 
     m.serial,
     m.timestamp,
-    TO_TIMESTAMP(m.timestamp / 1000) AS datetime,
+    m.timestamp AS datetime,
     m.obis,
     m.avg_import_kw,
     m.import_kwh,
@@ -158,3 +157,36 @@ LEFT JOIN phase_measurement pm_a ON m.serial = pm_a.serial AND m.timestamp = pm_
 LEFT JOIN phase_measurement pm_b ON m.serial = pm_b.serial AND m.timestamp = pm_b.timestamp AND pm_b.phase = 'B'
 LEFT JOIN phase_measurement pm_c ON m.serial = pm_c.serial AND m.timestamp = pm_c.timestamp AND pm_c.phase = 'C';
 COMMENT ON VIEW measurement_summary IS 'View combining measurement and phase-specific data for easier querying';
+
+
+-- 10:49 19/06/2025
+
+ALTER TABLE customer
+    ADD COLUMN first_name VARCHAR(255),
+    ADD COLUMN last_name VARCHAR(255),
+    ADD COLUMN email VARCHAR(255);
+
+COMMENT ON COLUMN customer.first_name IS 'Customer''s first name';
+COMMENT ON COLUMN customer.last_name IS 'Customer''s last name';
+COMMENT ON COLUMN customer.email IS 'Customer''s email address';
+
+-- 11:37 24/06/2025
+
+CREATE TABLE customer_prediction (
+    customer_ref BIGINT PRIMARY KEY,
+    prediction_json JSONB NOT NULL,
+    prediction_timestamp TIMESTAMP NOT NULL,
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_prediction_customer FOREIGN KEY (customer_ref) REFERENCES customer(customer_ref) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_prediction_customer_ref ON customer_prediction (customer_ref);  -- Newly added
+CREATE INDEX idx_prediction_generated_at ON customer_prediction (generated_at);  -- Newly added
+
+COMMENT ON TABLE customer_prediction IS 'Stores predicted electricity usage data per customer';
+COMMENT ON COLUMN customer_prediction.id IS 'Unique ID for each prediction record';
+COMMENT ON COLUMN customer_prediction.customer_ref IS 'Reference to the customer';
+COMMENT ON COLUMN customer_prediction.prediction_json IS 'Stored prediction result in JSON format (supports querying)';
+COMMENT ON COLUMN customer_prediction.file_path IS 'Optional path to the raw JSON file (local or cloud)';
+COMMENT ON COLUMN customer_prediction.prediction_timestamp IS 'When the prediction applies (e.g., next 15-min interval)';
+COMMENT ON COLUMN customer_prediction.generated_at IS 'When the prediction was generated';

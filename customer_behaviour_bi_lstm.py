@@ -13,7 +13,6 @@ import io
 import logging
 from dotenv import load_dotenv
 import pytz
-import json
 
 # Load environment variables
 load_dotenv()
@@ -29,6 +28,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
 
 class ElectricityDataset(Dataset):
     def __init__(self, data: np.ndarray, sequence_length: int):
@@ -146,25 +146,15 @@ class CustomerBehaviorPipeline:
                         'phase_a_current', 'phase_a_voltage',
                         'phase_b_current', 'phase_b_voltage',
                         'phase_c_current', 'phase_c_voltage']
-
-            # Make a copy of original import_kwh for plotting
             original_import_kwh = df['import_kwh'].copy()
-
-            # Compute differences for import_kwh only
             df['import_kwh_diff'] = df['import_kwh'].diff().fillna(0)
-
-            # Replace original import_kwh with diff for training
             df['import_kwh'] = df['import_kwh_diff']
             df = df.drop(columns=['import_kwh_diff'])
-
-            # Fill missing values in other features
             df = df[features].ffill().infer_objects(copy=False).fillna(0)
-
             scaler = StandardScaler()
             scaled_data = scaler.fit_transform(df)
             logger.info("Data preprocessed successfully using differences for import_kwh")
-            
-            return scaled_data, scaler, original_import_kwh.values  # Return original values for plotting
+            return scaled_data, scaler, original_import_kwh.values
         except Exception as e:
             logger.error(f"Failed to preprocess data: {e}")
             raise
@@ -234,7 +224,6 @@ class CustomerBehaviorPipeline:
                 predictions = np.concatenate(predictions)
                 actuals = np.concatenate(actuals)
                 r2 = r2_score(actuals.flatten(), predictions.flatten())
-
                 logger.info(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, R² Score: {r2:.4f}')
 
                 if r2 == 0:
@@ -272,7 +261,7 @@ class CustomerBehaviorPipeline:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             input_tensor = torch.FloatTensor(last_sequence).unsqueeze(0).to(device)
             with torch.no_grad():
-                prediction = model(input_tensor)  # shape: (1, 96, 1)
+                prediction = model(input_tensor)
             prediction = prediction.cpu().numpy().squeeze()
 
             dummy_array = np.zeros((96, len(scaler.mean_)))
@@ -280,13 +269,10 @@ class CustomerBehaviorPipeline:
             prediction_transformed = scaler.inverse_transform(dummy_array)[:, 0]
             prediction_deltas = np.maximum(prediction_transformed, 0)
 
-            # Reconstruct absolute kWh from deltas
             prediction_abs = [last_kwh + prediction_deltas[0]]
             for i in range(1, 96):
                 prediction_abs.append(prediction_abs[-1] + prediction_deltas[i])
 
-            logger.info(f"Predicted kWh deltas: {prediction_deltas}")
-            logger.info(f"Reconstructed kWh values: {prediction_abs}")
             return np.array(prediction_abs), np.array(prediction_deltas)
         except Exception as e:
             logger.error(f"Failed to make prediction: {e}")
@@ -325,50 +311,35 @@ class CustomerBehaviorPipeline:
             logger.error(f"Failed to create plot for customer {customer_ref}: {e}")
             raise
 
-    def save_prediction_to_json(self, customer_ref: int, predictions_abs: np.ndarray,
-                                predictions_deltas: np.ndarray, timestamp: datetime, last_kwh: float):
+    def save_prediction_to_db(self, customer_ref: int, prediction_abs: np.ndarray,
+                              prediction_deltas: np.ndarray, start_time: datetime):
         try:
-            output_dir = os.path.join(self.output_base_dir, f"customer_{customer_ref}")
-            os.makedirs(output_dir, exist_ok=True)
+            prediction_times = [start_time + timedelta(minutes=15 * i) for i in range(96)]
+            data_to_insert = []
+            for i in range(96):
+                data_to_insert.append((
+                    customer_ref,
+                    float(prediction_deltas[i]),
+                    float(prediction_abs[i]),
+                    prediction_times[i]
+                ))
 
-            prediction_data = {
-                "customer_ref": customer_ref,
-                "predicted_import_kwh_96_steps": predictions_abs.tolist(),
-                "predicted_import_kwh_diffs": predictions_deltas.tolist(),
-                "last_import_kwh": float(last_kwh),
-                "prediction_start_time": timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-                "generated_at": datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S %Z")
-            }
-
-            json_path = os.path.join(output_dir, f'prediction_{customer_ref}_{datetime.now(pytz.UTC).strftime("%Y%m%d_%H%M%S")}.json')
-            with open(json_path, 'w') as f:
-                json.dump(prediction_data, f, indent=4)
-            logger.info(f"Saved prediction JSON for customer {customer_ref} at: {json_path}")
-            return json_path, prediction_data
-        except Exception as e:
-            logger.error(f"Failed to save prediction JSON for customer {customer_ref}: {e}")
-            raise
-
-    def save_prediction_to_db(self, customer_ref: int, prediction_data: dict):
-        try:
-            prediction_timestamp = datetime.strptime(
-                prediction_data["prediction_start_time"], "%Y-%m-%d %H:%M:%S"
-            )
-            self.cur.execute("""
+            insert_query = """
                 INSERT INTO customer_prediction (
-                    customer_ref, prediction_json, prediction_timestamp
-                ) VALUES (%s, %s, %s)
-                ON CONFLICT (customer_ref)
+                    customer_ref,
+                    predicted_usage,
+                    predicted_import_kwh,
+                    prediction_timestamp
+                ) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (customer_ref, prediction_timestamp)
                 DO UPDATE SET
-                    prediction_json = EXCLUDED.prediction_json,
-                    prediction_timestamp = EXCLUDED.prediction_timestamp
-            """, (
-                customer_ref,
-                json.dumps(prediction_data),
-                prediction_timestamp
-            ))
+                    predicted_usage = EXCLUDED.predicted_usage,
+                    predicted_import_kwh = EXCLUDED.predicted_import_kwh
+            """
+
+            self.cur.executemany(insert_query, data_to_insert)
             self.conn.commit()
-            logger.info(f"Saved prediction for customer {customer_ref} to database")
+            logger.info(f"Saved {len(data_to_insert)} prediction rows for customer {customer_ref}")
         except Exception as e:
             logger.error(f"Failed to save prediction to database for customer {customer_ref}: {e}")
             self.conn.rollback()
@@ -394,7 +365,7 @@ class CustomerBehaviorPipeline:
             logger.error(f"Error saving model for customer {customer_ref}: {e}")
             raise
 
-    def process_customer(self, customer_ref: int, sequence_length: int = 1440, batch_size: int = 32) -> dict:
+    def process_customer(self, customer_ref: int, sequence_length: int = 192, batch_size: int = 32) -> dict:
         try:
             logger.info(f"Processing customer {customer_ref} for 24-hour 15-min interval prediction")
             df = self.fetch_data(customer_ref)
@@ -403,7 +374,6 @@ class CustomerBehaviorPipeline:
                 return None
 
             last_known_kwh = df['import_kwh'].iloc[-1]
-            # Get original_import_kwh for plotting
             scaled_data, scaler, original_import_kwh = self.preprocess_data(df)
 
             dataset = ElectricityDataset(scaled_data, sequence_length)
@@ -426,15 +396,12 @@ class CustomerBehaviorPipeline:
             last_timestamp = df['timestamp'].iloc[-1]
             next_timestamp = last_timestamp + timedelta(minutes=15)
 
-            # Use original_import_kwh for plotting
             df_plot = df.copy()
-            df_plot['import_kwh'] = original_import_kwh  # Restore original kWh for plotting
-
+            df_plot['import_kwh'] = original_import_kwh
             plot_path = self.create_prediction_plot(df_plot, predictions_abs, customer_ref, sequence_length)
-            json_path, prediction_data = self.save_prediction_to_json(customer_ref, predictions_abs, predictions_deltas, next_timestamp, last_known_kwh)
 
             try:
-                self.save_prediction_to_db(customer_ref, prediction_data)
+                self.save_prediction_to_db(customer_ref, predictions_abs, predictions_deltas, next_timestamp)
             except Exception as e:
                 logger.warning(f"Could not save prediction to DB for customer {customer_ref}: {e}")
 
@@ -445,35 +412,22 @@ class CustomerBehaviorPipeline:
                 'customer_ref': customer_ref,
                 'predictions': predictions_abs,
                 'last_known_kwh': last_known_kwh,
-                'plot_path': plot_path,
-                'json_path': json_path
+                'plot_path': plot_path
             }
         except Exception as e:
             logger.error(f"Failed to process customer {customer_ref}: {e}")
             return None
 
-    def run(self, sequence_length: int = 1440, batch_size: int = 32):
+    def run(self, sequence_length: int = 192, batch_size: int = 32):
         try:
             self.connect_db()
             customer_refs = self.fetch_customer_refs()
             results = []
-            total_increase = 0.0
             for customer_ref in customer_refs:
                 result = self.process_customer(customer_ref, sequence_length, batch_size)
                 if result:
                     results.append(result)
-                    increase = result['predictions'][0] - result['last_known_kwh']
-                    total_increase += increase
-                    logger.info(f"Customer {customer_ref}: Increase in usage: {increase:.4f} kWh")
-            logger.info(f"Total predicted increase in energy usage across all customers: {total_increase:.4f} kWh")
-            summary_data = {
-                "total_predicted_usage_increase_kWh": round(float(total_increase), 4),
-                "generated_at": datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S %Z")
-            }
-            summary_path = os.path.join(self.output_base_dir, f"total_usage_increase_{datetime.now(pytz.UTC).strftime('%Y%m%d_%H%M%S')}.json")
-            with open(summary_path, 'w') as f:
-                json.dump(summary_data, f, indent=4)
-            logger.info(f"Saved total predicted usage increase to: {summary_path}")
+                    logger.info(f"Customer {customer_ref}: Prediction completed")
             return results
         except Exception as e:
             logger.error(f"Pipeline failed: {e}")
@@ -487,4 +441,4 @@ if __name__ == "__main__":
     results = pipeline.run()
     for result in results:
         logger.info(f"Customer {result['customer_ref']}: Predicted kWh: {result['predictions'][:3]}..., "
-                   f"Plot: {result['plot_path']}, JSON: {result['json_path']}")
+                   f"Plot: {result['plot_path']}")

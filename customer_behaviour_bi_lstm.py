@@ -159,23 +159,23 @@ class CustomerBehaviorPipeline:
             logger.error(f"Failed to preprocess data: {e}")
             raise
 
-    def load_existing_model(self, customer_ref: int) -> tuple[nn.Module, float, float]:
+    def load_existing_model(self, customer_ref: int) -> tuple[nn.Module, float, float, datetime]:
         try:
             self.cur.execute("""
-                SELECT model_data, mse, r2_score
+                SELECT model_data, mse, r2_score, last_trained_data_timestamp
                 FROM customer_model
                 WHERE customer_ref = %s
             """, (customer_ref,))
             result = self.cur.fetchone()
             if result:
-                model_data, mse, r2_score = result
+                model_data, mse, r2_score, last_trained_time = result
                 model = BiLSTM(input_size=9)
                 buffer = io.BytesIO(model_data)
                 model = torch.jit.load(buffer)
                 logger.info(f"Loaded existing model for customer {customer_ref}")
-                return model, mse, r2_score
+                return model, mse, r2_score, last_trained_time
             logger.info(f"No existing model for customer {customer_ref}")
-            return None, None, None
+            return None, None, None, None
         except Exception as e:
             logger.error(f"Error loading model for customer {customer_ref}: {e}")
             raise
@@ -192,7 +192,6 @@ class CustomerBehaviorPipeline:
             best_r2_score = float('-inf')
             epochs_no_improve = 0
             early_stop = False
-
             for epoch in range(num_epochs):
                 if early_stop:
                     logger.info(f"Early stopping triggered at epoch {epoch}")
@@ -207,7 +206,6 @@ class CustomerBehaviorPipeline:
                     loss.backward()
                     optimizer.step()
                     train_loss += loss.item() * batch_x.size(0)
-
                 model.eval()
                 val_loss = 0
                 predictions, actuals = [], []
@@ -218,20 +216,17 @@ class CustomerBehaviorPipeline:
                         val_loss += criterion(outputs.squeeze(), batch_y.squeeze()).item() * batch_x.size(0)
                         predictions.extend(outputs.cpu().numpy())
                         actuals.extend(batch_y.cpu().numpy())
-
                 val_loss /= len(val_loader.dataset)
                 train_loss /= len(train_loader.dataset)
                 predictions = np.concatenate(predictions)
                 actuals = np.concatenate(actuals)
                 r2 = r2_score(actuals.flatten(), predictions.flatten())
                 logger.info(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, R² Score: {r2:.4f}')
-
                 if r2 == 0:
                     logger.warning("Validation R² is 0. Keeping last best model.")
                     if best_model_state is not None:
                         model.load_state_dict(best_model_state)
                     break
-
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_model_state = model.state_dict()
@@ -243,11 +238,9 @@ class CustomerBehaviorPipeline:
                     if epochs_no_improve >= patience:
                         early_stop = True
                         logger.info(f"No improvement in validation loss for {patience} epochs")
-
             if best_model_state:
                 model.load_state_dict(best_model_state)
                 logger.info(f"Final model restored with val loss: {best_val_loss:.4f}, R²: {best_r2_score:.4f}")
-
             logger.info(f"Model training completed. MSE: {best_val_loss:.4f}, R2 Score: {best_r2_score:.4f}")
             return model, best_val_loss, best_r2_score
         except Exception as e:
@@ -263,16 +256,13 @@ class CustomerBehaviorPipeline:
             with torch.no_grad():
                 prediction = model(input_tensor)
             prediction = prediction.cpu().numpy().squeeze()
-
             dummy_array = np.zeros((96, len(scaler.mean_)))
             dummy_array[:, 0] = prediction
             prediction_transformed = scaler.inverse_transform(dummy_array)[:, 0]
             prediction_deltas = np.maximum(prediction_transformed, 0)
-
             prediction_abs = [last_kwh + prediction_deltas[0]]
             for i in range(1, 96):
                 prediction_abs.append(prediction_abs[-1] + prediction_deltas[i])
-
             return np.array(prediction_abs), np.array(prediction_deltas)
         except Exception as e:
             logger.error(f"Failed to make prediction: {e}")
@@ -282,14 +272,12 @@ class CustomerBehaviorPipeline:
         try:
             output_dir = os.path.join(self.output_base_dir, f"customer_{customer_ref}")
             os.makedirs(output_dir, exist_ok=True)
-
             plt.figure(figsize=(16, 6))
             last_n = df.tail(sequence_length)
             timestamps = last_n['timestamp']
             actual_kw = last_n['import_kwh']
             last_timestamp = timestamps.iloc[-1]
             prediction_times = [last_timestamp + timedelta(minutes=15 * i) for i in range(1, 97)]
-
             plt.plot(timestamps, actual_kw.values, 'b-', label='Historical Consumption')
             plt.plot(prediction_times, predictions, 'g--o', label='Predicted Consumption (Next 24 Hours)')
             plt.axvline(x=last_timestamp, color='r', linestyle='--', label='Prediction Point')
@@ -323,7 +311,6 @@ class CustomerBehaviorPipeline:
                     float(prediction_abs[i]),
                     prediction_times[i]
                 ))
-
             insert_query = """
                 INSERT INTO customer_prediction (
                     customer_ref,
@@ -336,7 +323,6 @@ class CustomerBehaviorPipeline:
                     predicted_usage = EXCLUDED.predicted_usage,
                     predicted_import_kwh = EXCLUDED.predicted_import_kwh
             """
-
             self.cur.executemany(insert_query, data_to_insert)
             self.conn.commit()
             logger.info(f"Saved {len(data_to_insert)} prediction rows for customer {customer_ref}")
@@ -345,22 +331,23 @@ class CustomerBehaviorPipeline:
             self.conn.rollback()
             raise
 
-    def save_model(self, model: nn.Module, customer_ref: int, mse: float, r2_score: float):
+    def save_model(self, model: nn.Module, customer_ref: int, mse: float, r2_score: float, trained_data_timestamp: datetime):
         try:
             buffer = io.BytesIO()
             torch.jit.save(torch.jit.script(model), buffer)
             model_data = buffer.getvalue()
             self.cur.execute("""
-                INSERT INTO customer_model (customer_ref, model_data, mse, r2_score)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO customer_model (customer_ref, model_data, mse, r2_score, last_trained_data_timestamp)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (customer_ref) DO UPDATE 
                 SET model_data = EXCLUDED.model_data,
                     mse = EXCLUDED.mse,
                     r2_score = EXCLUDED.r2_score,
+                    last_trained_data_timestamp = EXCLUDED.last_trained_data_timestamp,
                     trained_at = CURRENT_TIMESTAMP
-            """, (customer_ref, psycopg2.Binary(model_data), float(mse), float(r2_score)))
+            """, (customer_ref, psycopg2.Binary(model_data), float(mse), float(r2_score), trained_data_timestamp))
             self.conn.commit()
-            logger.info(f"Saved model for customer {customer_ref}")
+            logger.info(f"Saved model for customer {customer_ref} with last trained data timestamp: {trained_data_timestamp}")
         except Exception as e:
             logger.error(f"Error saving model for customer {customer_ref}: {e}")
             raise
@@ -372,10 +359,34 @@ class CustomerBehaviorPipeline:
             if len(df) < sequence_length + 96:
                 logger.warning(f"Insufficient data for customer {customer_ref}")
                 return None
+            current_max_timestamp = df['timestamp'].max()
+
+            # Load existing model and its last trained data timestamp
+            model, prev_mse, prev_r2, last_trained_time = self.load_existing_model(customer_ref)
+
+            if last_trained_time and current_max_timestamp <= last_trained_time:
+                logger.info(f"Skipping training for customer {customer_ref} - No new data since last training.")
+                # Optionally make a prediction with existing model
+                last_known_kwh = df['import_kwh'].iloc[-1]
+                scaled_data, scaler, original_import_kwh = self.preprocess_data(df)
+                last_sequence = scaled_data[-sequence_length:]
+                predictions_abs, predictions_deltas = self.predict_next_timestep(model, last_sequence, scaler, last_known_kwh)
+                last_timestamp = df['timestamp'].iloc[-1]
+                next_timestamp = last_timestamp + timedelta(minutes=15)
+                df_plot = df.copy()
+                df_plot['import_kwh'] = original_import_kwh
+                plot_path = self.create_prediction_plot(df_plot, predictions_abs, customer_ref, sequence_length)
+                self.save_prediction_to_db(customer_ref, predictions_abs, predictions_deltas, next_timestamp)
+                return {
+                    'customer_ref': customer_ref,
+                    'predictions': predictions_abs,
+                    'last_known_kwh': last_known_kwh,
+                    'plot_path': plot_path,
+                    'skipped_training': True
+                }
 
             last_known_kwh = df['import_kwh'].iloc[-1]
             scaled_data, scaler, original_import_kwh = self.preprocess_data(df)
-
             dataset = ElectricityDataset(scaled_data, sequence_length)
             train_size = int(0.8 * len(dataset))
             val_size = len(dataset) - train_size
@@ -383,19 +394,15 @@ class CustomerBehaviorPipeline:
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
             val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
-            model, prev_mse, prev_r2 = self.load_existing_model(customer_ref)
             if model is None:
                 model = BiLSTM(input_size=9)
                 logger.info(f"Created new Bi-LSTM model for customer {customer_ref}")
 
             model, mse, r2_score = self.train_model(model, train_loader, val_loader)
-
             last_sequence = scaled_data[-sequence_length:]
             predictions_abs, predictions_deltas = self.predict_next_timestep(model, last_sequence, scaler, last_known_kwh)
-
             last_timestamp = df['timestamp'].iloc[-1]
             next_timestamp = last_timestamp + timedelta(minutes=15)
-
             df_plot = df.copy()
             df_plot['import_kwh'] = original_import_kwh
             plot_path = self.create_prediction_plot(df_plot, predictions_abs, customer_ref, sequence_length)
@@ -405,7 +412,8 @@ class CustomerBehaviorPipeline:
             except Exception as e:
                 logger.warning(f"Could not save prediction to DB for customer {customer_ref}: {e}")
 
-            self.save_model(model, customer_ref, mse, r2_score)
+            # Save model along with latest data timestamp
+            self.save_model(model, customer_ref, mse, r2_score, current_max_timestamp)
 
             logger.info(f"Customer {customer_ref}: Predictions saved for 96 intervals")
             return {

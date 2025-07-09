@@ -1,5 +1,8 @@
 import pandas as pd
 import psycopg2
+import boto3
+import tempfile
+import re
 from psycopg2.extras import execute_batch
 import logging
 from datetime import datetime
@@ -23,23 +26,37 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class LoadProfilePipeline:
-    def __init__(self, file_path):
-        """Initialize the pipeline with file path."""
+    def __init__(self, bucket_name, bucket_prefix=''):
+        """Initialize the pipeline with S3 bucket name and optional prefix."""
         self.db_config = {
-            'dbname': os.getenv('DB_NAME'),
+            'dbname': os.getenv('DB_NAME_S3'),
             'user': os.getenv('DB_USER'),
             'password': os.getenv('DB_PASSWORD'),
             'host': os.getenv('DB_HOST'),
             'port': os.getenv('DB_PORT')
         }
+
+        self.s3_config = {
+            'bucket_name': bucket_name,
+            'prefix': bucket_prefix,
+            'aws_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
+            'aws_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),
+            'region_name': os.getenv('AWS_REGION')
+        }
+
         # Validate environment variables
         for key, value in self.db_config.items():
             if value is None:
                 logger.error(f"Environment variable for {key} is not set")
                 raise ValueError(f"Environment variable for {key} is not set")
-        self.file_path = file_path
+        for key, value in self.s3_config.items():
+            if key in ['aws_access_key_id', 'aws_secret_access_key', 'region_name'] and value is None:
+                logger.error(f"S3 environment variable for {key} is not set")
+                raise ValueError(f"S3 environment variable for {key} is not set")
         self.conn = None
         self.cur = None
+        self.s3_client = None
+        self.temp_dir = tempfile.mkdtemp()
 
     def connect_db(self):
         """Establish connection to PostgreSQL database."""
@@ -50,6 +67,23 @@ class LoadProfilePipeline:
         except Exception as e:
             logger.error(f"Failed to connect to database: {e}")
             raise
+    
+    def connect_s3(self):
+        """Establish connection to S3."""
+        try:
+            self.s3_client = boto3.client(
+                's3',
+                aws_access_key_id=self.s3_config['aws_access_key_id'],
+                aws_secret_access_key=self.s3_config['aws_secret_access_key'],
+                region_name=self.s3_config['region_name']
+            )
+            # Test connection by listing buckets
+            self.s3_client.list_buckets()
+            logger.info("Successfully connected to S3")
+            logger.info(f"Connected to bucket: {self.s3_config['bucket_name']}")  
+        except Exception as e:
+            logger.error(f"Failed to connect to S3: {e}")
+            raise
 
     def close_db(self):
         """Close database connection."""
@@ -58,17 +92,94 @@ class LoadProfilePipeline:
         if self.conn:
             self.conn.close()
             logger.info("Database connection closed")
+    
+    def cleanup_temp_files(self):
+        """Remove temporary directory and its contents."""
+        try:
+            for root, _, files in os.walk(self.temp_dir, topdown=False):
+                for name in files:
+                    os.remove(os.path.join(root, name))
+            os.rmdir(self.temp_dir)
+            logger.info(f"Cleaned up temporary directory: {self.temp_dir}")
+        except Exception as e:
+            logger.error(f"Failed to clean up temporary directory: {e}")
 
-    def read_data(self):
+    def is_file_processed(self, s3_key):
+        """Check if a file has already been processed."""
+        try:
+            self.cur.execute(
+                "SELECT 1 FROM processed_files WHERE s3_path = %s;",
+                (s3_key,)
+            )
+            result = self.cur.fetchone()
+            return result is not None
+        except Exception as e:
+            logger.error(f"Failed to check processed files: {e}")
+            raise
+
+    def mark_file_processed(self, s3_key):
+        """Mark a file as processed in the database."""
+        try:
+            file_name = os.path.basename(s3_key)
+            insert_query = """
+            INSERT INTO processed_files (file_name, s3_path, processed_at)
+            VALUES (%s, %s, %s);
+            """
+            self.cur.execute(insert_query, (file_name, s3_key, datetime.now()))
+            self.conn.commit()
+            logger.info(f"Marked file as processed: {s3_key}")
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Failed to mark file as processed: {e}")
+            raise
+
+    def list_s3_files(self):
+        """List Excel and CSV files in the S3 bucket."""
+        try:
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(
+                Bucket=self.s3_config['bucket_name'],
+                Prefix=self.s3_config['prefix']
+            )
+            files = []
+            for page in pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        file_key = obj['Key']
+                        if re.search(r'\.(csv|xlsx|xls)$', file_key, re.IGNORECASE):
+                            files.append(file_key)
+            logger.info(f"Found {len(files)} Excel/CSV files in S3 bucket")
+            return files
+        except Exception as e:
+            logger.error(f"Failed to list S3 files: {e}")
+            raise
+
+    def download_s3_file(self, s3_key):
+        """Download an S3 file to a temporary local path."""
+        try:
+            file_name = os.path.basename(s3_key)
+            local_path = os.path.join(self.temp_dir, file_name)
+            self.s3_client.download_file(
+                self.s3_config['bucket_name'],
+                s3_key,
+                local_path
+            )
+            logger.info(f"Downloaded file from S3: {s3_key} to {local_path}")
+            return local_path
+        except Exception as e:
+            logger.error(f"Failed to download S3 file {s3_key}: {e}")
+            raise
+
+    def read_data(self, file_path):
         """Read the Excel or CSV file into a pandas DataFrame."""
         try:
-            file_extension = os.path.splitext(self.file_path)[1].lower()
+            file_extension = os.path.splitext(file_path)[1].lower()
             if file_extension in ['.xlsx', '.xls']:
-                df = pd.read_excel(self.file_path, engine='openpyxl')
-                logger.info(f"Successfully read Excel file: {self.file_path}")
+                df = pd.read_excel(file_path, engine='openpyxl')
+                logger.info(f"Successfully read Excel file: {file_path}")
             elif file_extension == '.csv':
-                df = pd.read_csv(self.file_path)
-                logger.info(f"Successfully read CSV file: {self.file_path}")
+                df = pd.read_csv(file_path)
+                logger.info(f"Successfully read CSV file: {file_path}")
             else:
                 raise ValueError(f"Unsupported file format: {file_extension}")
             return df
@@ -256,24 +367,51 @@ class LoadProfilePipeline:
             self.conn.rollback()
             logger.error(f"Failed to insert phase measurements: {e}")
             raise
-
-    def run(self):
-        """Execute the full data insertion pipeline."""
-        start_time = datetime.now()
-        logger.info("Starting data insertion pipeline")
-        
+    
+    def process_file(self, s3_key):
+        """Process a single S3 file."""
+        local_path = None
         try:
-            # Connect to database
-            self.connect_db()
-            
-            # Read data file
-            df = self.read_data()
-            
-            # Insert data in order to respect foreign key constraints
+            if self.is_file_processed(s3_key):
+                logger.info(f"Skipping already processed file: {s3_key}")
+                return
+
+            local_path = self.download_s3_file(s3_key)
+            df = self.read_data(local_path)
+
             self.insert_customers(df)
             self.insert_meters(df)
             self.insert_measurements(df)
             self.insert_phase_measurements(df)
+
+            self.mark_file_processed(s3_key)
+            logger.info(f"Successfully processed file: {s3_key}")
+
+        except Exception as e:
+            logger.error(f"Failed to process file {s3_key}: {e}")
+            raise
+        finally:
+            if local_path and os.path.exists(local_path):
+                os.remove(local_path)
+                logger.info(f"Removed temporary file: {local_path}")
+
+    def run(self):
+        """Execute the full data insertion pipeline for all S3 files."""
+        start_time = datetime.now()
+        logger.info("Starting S3 data insertion pipeline")
+        
+        try:
+            self.connect_db()
+            self.connect_s3()
+            
+            s3_files = self.list_s3_files()
+            if not s3_files:
+                logger.warning("No Excel or CSV files found in S3 bucket")
+                return
+            
+            for s3_key in s3_files:
+                logger.info(f"Processing S3 file: {s3_key}")
+                self.process_file(s3_key)
             
             logger.info(f"Pipeline completed successfully in {datetime.now() - start_time}")
         
@@ -283,17 +421,15 @@ class LoadProfilePipeline:
         
         finally:
             self.close_db()
+            self.cleanup_temp_files()
 
 if __name__ == "__main__":
-    # Path to data file
-    # file_path = r"LOAD_PROFILE_HISTORICAL_READINGS_INVENTORY_24_04_2025 - February AZ108.csv"
-    file_path = r"LOAD_PROFILE_HISTORICAL_READINGS_INVENTORY_24_04_2025 - March.csv"
+    bucket_name = os.getenv('S3_BUCKET_NAME')
+    bucket_prefix = os.getenv('S3_BUCKET_PREFIX', '')
     
-    # Validate file existence
-    if not os.path.exists(file_path):
-        logger.error(f"Data file not found: {file_path}")
+    if not bucket_name:
+        logger.error("S3_BUCKET_NAME environment variable not set")
         exit(1)
     
-    # Run pipeline
-    pipeline = LoadProfilePipeline(file_path)
+    pipeline = LoadProfilePipeline(bucket_name, bucket_prefix)
     pipeline.run()

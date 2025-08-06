@@ -24,3 +24,5 @@ REQUIRED_ENV_VARS = {
     'DB': ['DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST', 'DB_PORT'],
     'S3': ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'S3_BUCKET_NAME']
 }
+
+OUTPUT_BASE_DIR = "customer_outputs_bilstm_day"

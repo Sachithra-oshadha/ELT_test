@@ -51,7 +51,7 @@ This project is a comprehensive Python-based data pipeline that processes energy
 1.  **Clone the Repository:**
 
     ```bash
-     git clone https://github.com/your-username/energy-data-pipeline.git 
+     git clone https://github.com/Sachithra-oshadha/ELT_test.git 
      ```
 
     ```bash 

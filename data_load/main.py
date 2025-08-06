@@ -1,5 +1,9 @@
 import tempfile
 import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from logger import setup_logger
 from config import DB_CONFIG, S3_CONFIG, S3_BUCKET_NAME, S3_BUCKET_PREFIX, REQUIRED_ENV_VARS
 from database import Database

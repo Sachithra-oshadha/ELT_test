@@ -114,7 +114,7 @@ class FileProcessor:
             (
                 row['serial'], row['timestamp'], row['obis'],
                 row['avg_import_kw'] if pd.notnull(row['avg_import_kw']) else None,
-                row['imshow_kwh'] if pd.notnull(row['import_kwh']) else None,
+                row['import_kwh'] if pd.notnull(row['import_kwh']) else None,
                 row['avg_export_kw'] if pd.notnull(row['avg_export_kw']) else None,
                 row['export_kwh'] if pd.notnull(row['export_kwh']) else None,
                 row['avg_import_kva'] if pd.notnull(row['avg_import_kva']) else None,
@@ -132,7 +132,7 @@ class FileProcessor:
         INSERT INTO measurement (
             serial, timestamp, obis, avg_import_kw, import_kwh, avg_export_kw, export_kwh,
             avg_import_kva, avg_export_kva, import_kvarh, export_kvarh, power_factor,
-            avg_scurrent, avg_voltage
+            avg_current, avg_voltage
         )
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (serial, timestamp) DO NOTHING;

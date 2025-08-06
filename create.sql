@@ -1,8 +1,10 @@
--- Combined schema for storing electrical load profile data and customer behavior models
 -- Database: load_profiles_db
+-- Schema for storing electrical load profile data, customer behavior models, predictions, and processed files
 
 -- Drop existing objects to ensure a clean slate
 DROP VIEW IF EXISTS measurement_summary;
+DROP TABLE IF EXISTS customer_prediction;
+DROP TABLE IF EXISTS processed_files;
 DROP TABLE IF EXISTS customer_model;
 DROP TABLE IF EXISTS phase_measurement;
 DROP TABLE IF EXISTS measurement;
@@ -13,12 +15,18 @@ DROP FUNCTION IF EXISTS update_updated_at_column;
 -- Create Customer table
 CREATE TABLE customer (
     customer_ref BIGINT PRIMARY KEY,
+    first_name VARCHAR(255),
+    last_name VARCHAR(255),
+    email VARCHAR(255),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT customer_ref_positive CHECK (customer_ref > 0)
 );
-COMMENT ON TABLE customer IS 'Stores unique customer identifiers';
+COMMENT ON TABLE customer IS 'Stores unique customer identifiers and personal details';
 COMMENT ON COLUMN customer.customer_ref IS 'Unique customer reference number';
+COMMENT ON COLUMN customer.first_name IS 'Customer''s first name';
+COMMENT ON COLUMN customer.last_name IS 'Customer''s last name';
+COMMENT ON COLUMN customer.email IS 'Customer''s email address';
 
 -- Create Meter table
 CREATE TABLE meter (
@@ -57,7 +65,7 @@ CREATE TABLE measurement (
 );
 COMMENT ON TABLE measurement IS 'Stores load profile measurements for meters';
 COMMENT ON COLUMN measurement.serial IS 'Foreign key referencing the meter';
-COMMENT ON COLUMN measurement.timestamp IS 'Timestamp of the measurement (datetime)';
+COMMENT ON COLUMN measurement.timestamp IS 'Timestamp of the measurement';
 COMMENT ON COLUMN measurement.obis IS 'OBIS code indicating measurement type (e.g., LP for load profile)';
 COMMENT ON COLUMN measurement.avg_import_kw IS 'Average import power in kilowatts';
 COMMENT ON COLUMN measurement.import_kwh IS 'Cumulative import energy in kilowatt-hours';
@@ -87,6 +95,7 @@ CREATE TABLE customer_model (
     customer_ref BIGINT PRIMARY KEY,
     model_data BYTEA NOT NULL,
     trained_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_trained_data_timestamp TIMESTAMP,
     mse NUMERIC(15, 4),
     r2_score NUMERIC(5, 4),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -97,16 +106,46 @@ COMMENT ON TABLE customer_model IS 'Stores trained machine learning models for c
 COMMENT ON COLUMN customer_model.customer_ref IS 'Foreign key referencing the customer';
 COMMENT ON COLUMN customer_model.model_data IS 'Serialized binary of the trained model';
 COMMENT ON COLUMN customer_model.trained_at IS 'Timestamp when the model was last trained';
+COMMENT ON COLUMN customer_model.last_trained_data_timestamp IS 'Timestamp of the most recent data used for training';
 COMMENT ON COLUMN customer_model.mse IS 'Mean Squared Error of the model on validation data';
 COMMENT ON COLUMN customer_model.r2_score IS 'R-squared score of the model on validation data';
+
+-- Create CustomerPrediction table
+CREATE TABLE customer_prediction (
+    customer_ref BIGINT NOT NULL,
+    prediction_timestamp TIMESTAMP NOT NULL,
+    predicted_usage NUMERIC(12, 4) NOT NULL,
+    predicted_import_kwh NUMERIC(10, 4) NOT NULL,
+    generated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT pk_customer_prediction PRIMARY KEY (customer_ref, prediction_timestamp),
+    CONSTRAINT fk_customer_ref FOREIGN KEY (customer_ref) REFERENCES customer (customer_ref) ON DELETE CASCADE
+);
+COMMENT ON TABLE customer_prediction IS 'Stores predicted energy usage for customers';
+COMMENT ON COLUMN customer_prediction.customer_ref IS 'Foreign key referencing the customer';
+COMMENT ON COLUMN customer_prediction.prediction_timestamp IS 'Timestamp for which the prediction is made';
+COMMENT ON COLUMN customer_prediction.predicted_usage IS 'Predicted energy usage delta from previous step (kWh)';
+COMMENT ON COLUMN customer_prediction.predicted_import_kwh IS 'Predicted absolute import energy (kWh)';
+COMMENT ON COLUMN customer_prediction.generated_at IS 'Timestamp when the prediction was created';
+
+-- Create ProcessedFiles table
+CREATE TABLE processed_files (
+    file_name VARCHAR(255) PRIMARY KEY,
+    s3_path VARCHAR(512) NOT NULL,
+    processed_at TIMESTAMP NOT NULL
+);
+COMMENT ON TABLE processed_files IS 'Stores metadata for processed data files';
+COMMENT ON COLUMN processed_files.file_name IS 'Unique name of the processed file';
+COMMENT ON COLUMN processed_files.s3_path IS 'S3 path where the file is stored';
+COMMENT ON COLUMN processed_files.processed_at IS 'Timestamp when the file was processed';
 
 -- Create indexes for performance
 CREATE INDEX idx_measurement_timestamp ON measurement (timestamp);
 CREATE INDEX idx_measurement_serial ON measurement (serial);
 CREATE INDEX idx_phase_measurement_serial_timestamp ON phase_measurement (serial, timestamp);
 CREATE INDEX idx_meter_customer_ref ON meter (customer_ref);
+CREATE INDEX idx_customer_prediction_ref ON customer_prediction (customer_ref);
 
--- Create a function to update updated_at timestamp
+-- Create function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -131,7 +170,7 @@ CREATE TRIGGER update_customer_model_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
--- Create a view for easier querying of combined data
+-- Create view for easier querying of combined data
 CREATE VIEW measurement_summary AS
 SELECT 
     m.serial,
@@ -157,36 +196,3 @@ LEFT JOIN phase_measurement pm_a ON m.serial = pm_a.serial AND m.timestamp = pm_
 LEFT JOIN phase_measurement pm_b ON m.serial = pm_b.serial AND m.timestamp = pm_b.timestamp AND pm_b.phase = 'B'
 LEFT JOIN phase_measurement pm_c ON m.serial = pm_c.serial AND m.timestamp = pm_c.timestamp AND pm_c.phase = 'C';
 COMMENT ON VIEW measurement_summary IS 'View combining measurement and phase-specific data for easier querying';
-
-
--- 10:49 19/06/2025
-
-ALTER TABLE customer
-    ADD COLUMN first_name VARCHAR(255),
-    ADD COLUMN last_name VARCHAR(255),
-    ADD COLUMN email VARCHAR(255);
-
-COMMENT ON COLUMN customer.first_name IS 'Customer''s first name';
-COMMENT ON COLUMN customer.last_name IS 'Customer''s last name';
-COMMENT ON COLUMN customer.email IS 'Customer''s email address';
-
--- 11:37 24/06/2025
-
-CREATE TABLE customer_prediction (
-    customer_ref BIGINT PRIMARY KEY,
-    prediction_json JSONB NOT NULL,
-    prediction_timestamp TIMESTAMP NOT NULL,
-    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_prediction_customer FOREIGN KEY (customer_ref) REFERENCES customer(customer_ref) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_prediction_customer_ref ON customer_prediction (customer_ref);  -- Newly added
-CREATE INDEX idx_prediction_generated_at ON customer_prediction (generated_at);  -- Newly added
-
-COMMENT ON TABLE customer_prediction IS 'Stores predicted electricity usage data per customer';
-COMMENT ON COLUMN customer_prediction.id IS 'Unique ID for each prediction record';
-COMMENT ON COLUMN customer_prediction.customer_ref IS 'Reference to the customer';
-COMMENT ON COLUMN customer_prediction.prediction_json IS 'Stored prediction result in JSON format (supports querying)';
-COMMENT ON COLUMN customer_prediction.file_path IS 'Optional path to the raw JSON file (local or cloud)';
-COMMENT ON COLUMN customer_prediction.prediction_timestamp IS 'When the prediction applies (e.g., next 15-min interval)';
-COMMENT ON COLUMN customer_prediction.generated_at IS 'When the prediction was generated';

@@ -2,7 +2,7 @@
 
 This project is a comprehensive Python-based data pipeline that processes energy meter data from Excel or CSV files stored in an AWS S3 bucket, loads it into a PostgreSQL database, and uses a Bidirectional LSTM (Bi-LSTM) model to predict customer energy consumption over the next 24 hours at 15-minute intervals. The pipeline supports data ingestion, preprocessing, model training, prediction, visualization, and storage, with robust error handling and logging.
 
-# Features
+## Features
 
 - **File Processing**: Reads and processes .csv, .xlsx, and .xls files from an AWS S3 bucket.
 - **Data Validation:** Ensures data integrity with checks for valid formats, unique entries, and conflict handling.
@@ -51,7 +51,7 @@ This project is a comprehensive Python-based data pipeline that processes energy
 1.  **Clone the Repository:**
 
     ```bash
-     git clone https://github.com/your-username/energy-data-pipeline.git 
+     git clone https://github.com/Sachithra-oshadha/ELT_test.git
      ```
 
     ```bash 

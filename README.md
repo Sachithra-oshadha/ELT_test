@@ -55,7 +55,7 @@ This project is a comprehensive Python-based data pipeline that processes energy
      ```
 
     ```bash 
-    cd energy-data-pipeline 
+    cd ELT_test 
     ```
 2. **Install Dependencies:**
 
@@ -86,7 +86,7 @@ This project is a comprehensive Python-based data pipeline that processes energy
     Execute the create.sql script to set up the PostgreSQL schema:
     
     ```bash
-    psql -U postgres -d test_load_profiles -f create.sql
+    psql -U postgres -d <database name> -f create.sql
     ```
 
 

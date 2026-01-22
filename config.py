@@ -26,3 +26,5 @@ REQUIRED_ENV_VARS = {
 }
 
 OUTPUT_BASE_DIR = "customer_outputs_bilstm_day"
+
+LOCAL_INPUT_DIR = os.getenv("LOCAL_INPUT_DIR")

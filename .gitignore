@@ -1,3 +1,6 @@
 *.xlsx
 *.csv
 .env
+*__pycache__
+customer_outputs_bilstm_day_*
+customer_outputs_bilstm_*.log

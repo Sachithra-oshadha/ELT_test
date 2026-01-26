@@ -66,9 +66,10 @@ class CustomerBehaviorPipeline:
             results = []
 
             for customer_ref in customer_refs:
-                self.logger.info(f"Processing customer {customer_ref} for 24-hour 15-min interval prediction")
+                self.logger.info(f"Processing customer {customer_ref}")
                 df = self.fetch_data(customer_ref)
 
+                # --- 1. Data length check ---
                 if len(df) < sequence_length + 96:
                     self.logger.warning(f"Insufficient data for customer {customer_ref}")
                     continue
@@ -76,33 +77,71 @@ class CustomerBehaviorPipeline:
                 current_max_timestamp = df['timestamp'].max()
                 model, prev_mse, prev_r2, last_trained_time = self.load_existing_model(cur, customer_ref)
 
+                # --- 2. No new data check ---
                 if last_trained_time and current_max_timestamp <= last_trained_time:
-                    self.logger.info(f"Skipping training for customer {customer_ref} - No new data since last training.")
-                    last_known_kwh = df['import_kwh'].iloc[-1]
-                    scaled_data, scaler, original_import_kwh = preprocess_data(df, self.logger)
-                    last_sequence = scaled_data[-sequence_length:]
-                    predictions_abs, predictions_deltas = predict_next_timestep(model, last_sequence, scaler, last_known_kwh, self.logger)
-                    last_timestamp = df['timestamp'].iloc[-1]
-                    next_timestamp = last_timestamp + timedelta(minutes=15)
-                    df_plot = df.copy()
-                    df_plot['import_kwh'] = original_import_kwh
-                    plot_path = create_prediction_plot(df_plot, predictions_abs, customer_ref, sequence_length, self.output_base_dir, self.logger)
-                    save_prediction_to_db(cur, conn, customer_ref, predictions_abs, predictions_deltas, next_timestamp, self.logger)
+                    self.logger.info(
+                        f"Skipping customer {customer_ref} - No new data since last training."
+                    )
                     results.append({
                         'customer_ref': customer_ref,
-                        'predictions': predictions_abs,
-                        'last_known_kwh': last_known_kwh,
-                        'plot_path': plot_path,
-                        'skipped_training': True
+                        'skipped_training': True,
+                        'reason': 'no_new_data'
                     })
                     continue
 
+                # --- 3. Flat signal check ---
+                recent_window = df['import_kwh'].iloc[-(sequence_length + 96):]
+
+                if recent_window.std() < 1e-4:
+                    constant_value = recent_window.iloc[-1]
+
+                    self.logger.info(
+                        f"Customer {customer_ref}: Near-flat import_kwh detected "
+                        f"(std={recent_window.std():.6f}). Skipping training."
+                    )
+
+                    predictions_abs = np.full(96, constant_value)
+                    predictions_deltas = np.zeros(96)
+
+                    last_timestamp = df['timestamp'].iloc[-1]
+                    next_timestamp = last_timestamp + timedelta(minutes=15)
+
+                    try:
+                        save_prediction_to_db(
+                            cur, conn,
+                            customer_ref,
+                            predictions_abs,
+                            predictions_deltas,
+                            next_timestamp,
+                            self.logger
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Could not save flat prediction for customer {customer_ref}: {e}"
+                        )
+
+                    results.append({
+                        'customer_ref': customer_ref,
+                        'skipped_training': True,
+                        'reason': 'near_flat_signal',
+                        'std': float(recent_window.std())
+                    })
+
+                    continue
+
+                # --- 4. Normal pipeline (training + prediction) ---
                 last_known_kwh = df['import_kwh'].iloc[-1]
+
                 scaled_data, scaler, original_import_kwh = preprocess_data(df, self.logger)
+
                 dataset = ElectricityDataset(scaled_data, sequence_length)
                 train_size = int(0.8 * len(dataset))
                 val_size = len(dataset) - train_size
-                train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+
+                train_dataset, val_dataset = torch.utils.data.random_split(
+                    dataset, [train_size, val_size]
+                )
+
                 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
                 val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
@@ -110,31 +149,62 @@ class CustomerBehaviorPipeline:
                     model = BiLSTM(input_size=9)
                     self.logger.info(f"Created new Bi-LSTM model for customer {customer_ref}")
 
-                model, best_val_loss, best_r2 = train_model(model, train_loader, val_loader, logger=self.logger)
+                model, best_val_loss, best_r2 = train_model(
+                    model,
+                    train_loader,
+                    val_loader,
+                    logger=self.logger
+                )
+
                 last_sequence = scaled_data[-sequence_length:]
-                predictions_abs, predictions_deltas = predict_next_timestep(model, last_sequence, scaler, last_known_kwh, self.logger)
+                predictions_abs, predictions_deltas = predict_next_timestep(
+                    model,
+                    last_sequence,
+                    scaler,
+                    last_known_kwh,
+                    self.logger
+                )
+
                 last_timestamp = df['timestamp'].iloc[-1]
                 next_timestamp = last_timestamp + timedelta(minutes=15)
+
                 df_plot = df.copy()
                 df_plot['import_kwh'] = original_import_kwh
-                plot_path = create_prediction_plot(df_plot, predictions_abs, customer_ref, sequence_length, self.output_base_dir, self.logger)
 
-                try:
-                    save_prediction_to_db(cur, conn, customer_ref, predictions_abs, predictions_deltas, next_timestamp, self.logger)
-                except Exception as e:
-                    self.logger.warning(f"Could not save prediction to DB for customer {customer_ref}: {e}")
+                plot_path = create_prediction_plot(
+                    df_plot,
+                    predictions_abs,
+                    customer_ref,
+                    sequence_length,
+                    self.output_base_dir,
+                    self.logger
+                )
 
-                save_model_to_db(cur, conn, model, customer_ref, best_val_loss, best_r2, current_max_timestamp, self.logger)
+                save_prediction_to_db(
+                    cur, conn,
+                    customer_ref,
+                    predictions_abs,
+                    predictions_deltas,
+                    next_timestamp,
+                    self.logger
+                )
+
+                save_model_to_db(
+                    cur, conn,
+                    model,
+                    customer_ref,
+                    best_val_loss,
+                    best_r2,
+                    current_max_timestamp,
+                    self.logger
+                )
 
                 results.append({
                     'customer_ref': customer_ref,
                     'predictions': predictions_abs,
-                    'last_known_kwh': last_known_kwh,
                     'plot_path': plot_path
                 })
-
-                self.logger.info(f"Customer {customer_ref}: Predictions saved for 96 intervals")
-
+                
             return results
 
         except Exception as e:

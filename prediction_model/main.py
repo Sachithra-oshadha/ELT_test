@@ -68,6 +68,7 @@ class CustomerBehaviorPipeline:
             for customer_ref in customer_refs:
                 self.logger.info(f"Processing customer {customer_ref}")
                 df = self.fetch_data(customer_ref)
+                last_known_kwh = df['import_kwh'].iloc[-1]
 
                 # --- 1. Data length check ---
                 if len(df) < sequence_length + 96:
@@ -84,8 +85,10 @@ class CustomerBehaviorPipeline:
                     )
                     results.append({
                         'customer_ref': customer_ref,
-                        'skipped_training': True,
-                        'reason': 'no_new_data'
+                        'status': 'skipped',
+                        'predictions': None,
+                        'last_known_kwh': last_known_kwh,
+                        'plot_path': None
                     })
                     continue
 
@@ -122,16 +125,15 @@ class CustomerBehaviorPipeline:
 
                     results.append({
                         'customer_ref': customer_ref,
-                        'skipped_training': True,
-                        'reason': 'near_flat_signal',
-                        'std': float(recent_window.std())
+                        'status': 'skipped',
+                        'predictions': None,
+                        'last_known_kwh': last_known_kwh,
+                        'plot_path': None
                     })
 
                     continue
 
                 # --- 4. Normal pipeline (training + prediction) ---
-                last_known_kwh = df['import_kwh'].iloc[-1]
-
                 scaled_data, scaler, original_import_kwh = preprocess_data(df, self.logger)
 
                 dataset = ElectricityDataset(scaled_data, sequence_length)
@@ -201,7 +203,9 @@ class CustomerBehaviorPipeline:
 
                 results.append({
                     'customer_ref': customer_ref,
+                    'status': 'trained',
                     'predictions': predictions_abs,
+                    'last_known_kwh': last_known_kwh,
                     'plot_path': plot_path
                 })
                 
@@ -217,5 +221,15 @@ if __name__ == "__main__":
     pipeline = CustomerBehaviorPipeline(logger=logger)
     results = pipeline.run()
     for result in results:
-        logger.info(f"Customer {result['customer_ref']}: Predicted kWh: {result['predictions'][:3]}..., "
-                   f"Plot: {result['plot_path']}")
+        if result['status'] == 'trained':
+            logger.info(
+                f"Customer {result['customer_ref']}: "
+                f"Predicted kWh: {result['predictions'][:3]}..., "
+                f"Last known kWh: {result['last_known_kwh']}, "
+                f"Plot: {result['plot_path']}"
+            )
+        else:
+            logger.info(
+                f"Customer {result['customer_ref']}: "
+                f"Skipped (last_known_kwh={result['last_known_kwh']})"
+            )

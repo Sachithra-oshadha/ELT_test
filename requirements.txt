@@ -10,3 +10,8 @@ seaborn
 tensorflow
 torch
 boto3
+
+fastapi 
+uvicorn 
+sqlalchemy 
+asyncpg

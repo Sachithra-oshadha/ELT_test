@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Load Profile Prediction</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel='stylesheet' href='index.css'>
+</head>
+
+<body>
+    <header>
+        <h1>Microgrid Predictor</h1>
+        <div class="status-badge" id="statusBadge">
+            <div style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--success-color);"></div>
+            System Ready
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="controls">
+            <div class="input-group">
+                <label for="customerRef">Customer</label>
+                <select id="customerRef" onchange="onCustomerSelect()"
+                    style="background-color: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-color); padding: 0.5rem 1rem; border-radius: 0.5rem; outline: none;">
+                    <option value="" selected disabled>Select a customer...</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label for="simTime">Current Simulated Time</label>
+                <input type="datetime-local" id="simTime" value="">
+            </div>
+            <button id="simBtn" onclick="simulateNextStep()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                Simulate Next 15 Mins
+            </button>
+            <button id="autoSimBtn" onclick="toggleAutoSimulate()" style="background-color: var(--border-color);">
+                Auto Run
+            </button>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-title">Actual Import (kWh)</div>
+                <div class="stat-value" id="actualKwh">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Predicted Import (kWh)</div>
+                <div class="stat-value" id="predKwh" style="color: var(--accent-primary)">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Delta</div>
+                <div class="stat-value" id="deltaKwh">--</div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <div class="loading-overlay" id="loadingOverlay">
+                <div class="spinner"></div>
+            </div>
+            <canvas id="predictionChart"></canvas>
+        </div>
+    </div>
+
+    <script src='index.js'></script>
+</body>
+
+</html>

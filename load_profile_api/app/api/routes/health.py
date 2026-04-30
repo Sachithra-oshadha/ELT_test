@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.config import DB_CONFIG
+from config import DB_CONFIG
 
 router = APIRouter()
 

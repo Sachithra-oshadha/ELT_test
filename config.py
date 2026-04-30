@@ -11,6 +11,13 @@ DB_CONFIG = {
     'port': os.getenv('DB_PORT')
 }
 
+def get_database_url():
+    return (
+        f"postgresql+asyncpg://{DB_CONFIG['user']}:"
+        f"{DB_CONFIG['password']}@{DB_CONFIG['host']}:"
+        f"{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
+    )
+
 S3_CONFIG = {
     'aws_access_key_id': os.getenv('AWS_ACCESS_KEY_ID'),
     'aws_secret_access_key': os.getenv('AWS_SECRET_ACCESS_KEY'),

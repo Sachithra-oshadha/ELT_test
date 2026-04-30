@@ -3,7 +3,7 @@ from imports import *
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Local imports
-from config import DB_CONFIG, OUTPUT_BASE_DIR
+from config import DB_CONFIG, OUTPUT_DIR_PREFIX
 from database_utils import DatabaseManager
 from data_processing import ElectricityDataset, preprocess_data
 from model_definition import BiLSTMQuantile
@@ -15,7 +15,7 @@ from logger import setup_logger
 logger = setup_logger()
 
 class CustomerBehaviorPipeline:
-    def __init__(self, logger: logging.Logger, output_base_dir: str = f"{OUTPUT_BASE_DIR}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"):
+    def __init__(self, logger: logging.Logger, output_base_dir: str = f"{OUTPUT_DIR_PREFIX}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"):
         self.db_manager = DatabaseManager(db_config=DB_CONFIG, logger=logger)
         self.output_base_dir = output_base_dir
         self.logger = logger

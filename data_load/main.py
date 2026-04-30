@@ -1,4 +1,5 @@
 import tempfile
+import shutil
 import os
 import sys
 
@@ -23,13 +24,16 @@ logger = setup_logger()
 def validate_env_vars():
     """
     Validate required environment variables.
-    S3 vars are optional because we support local fallback.
+    DB vars are required; S3 vars are optional (local fallback supported).
     """
-    for group, vars in REQUIRED_ENV_VARS.items():
-        for var in vars:
-            if not os.getenv(var):
-                logger.error(f"Missing required environment variable: {var}")
-                raise EnvironmentError(f"Missing required environment variable: {var}")
+    for var in REQUIRED_ENV_VARS['DB']:
+        if not os.getenv(var):
+            logger.error(f"Missing required environment variable: {var}")
+            raise EnvironmentError(f"Missing required environment variable: {var}")
+
+    for var in REQUIRED_ENV_VARS['S3']:
+        if not os.getenv(var):
+            logger.warning(f"Optional S3 variable not set: {var} (will use local fallback)")
 
 
 def main():
@@ -91,11 +95,7 @@ def main():
         # --------------------------------------------------
         db.close()
 
-        for root, _, files in os.walk(temp_dir):
-            for file in files:
-                os.remove(os.path.join(root, file))
-
-        os.rmdir(temp_dir)
+        shutil.rmtree(temp_dir, ignore_errors=True)
         logger.info("Temporary files cleaned up.")
 
 

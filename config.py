@@ -32,6 +32,6 @@ REQUIRED_ENV_VARS = {
     'S3': ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'S3_BUCKET_NAME']
 }
 
-OUTPUT_BASE_DIR = "customer_outputs_bilstm_day"
+OUTPUT_DIR_PREFIX = "customer_outputs_bilstm_day"
 
 LOCAL_INPUT_DIR = os.getenv("LOCAL_INPUT_DIR")

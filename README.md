@@ -1,180 +1,168 @@
-# Load Profile and Customer Behavior Analysis Pipeline
+# Microgrid Load Profile Prediction System
 
-This project is a comprehensive Python-based data pipeline that processes energy meter data from Excel or CSV files stored in an AWS S3 bucket, loads it into a PostgreSQL database, and uses a Bidirectional LSTM (Bi-LSTM) model to predict customer energy consumption over the next 24 hours at 15-minute intervals. The pipeline supports data ingestion, preprocessing, model training, prediction, visualization, and storage, with robust error handling and logging.
+A full-stack Python pipeline that ingests energy meter data (from AWS S3 or local filesystem), stores it in PostgreSQL, trains per-customer Bidirectional LSTM models, and serves real-time 15-minute-ahead load predictions via a FastAPI backend and browser-based simulation UI.
 
 ## Features
 
-- **File Processing**: Reads and processes .csv, .xlsx, and .xls files from an AWS S3 bucket.
-- **Data Validation:** Ensures data integrity with checks for valid formats, unique entries, and conflict handling.
-- **Database Integration:** Inserts data into PostgreSQL tables for customers, meters, measurements, phase measurements, customer models, predictions, and processed files.
-- **S3 Integration:** Lists and downloads files from S3, tracks processed files, and uploads prediction plots.
-- **Machine Learning:** Trains a Bi-LSTM model per customer for 24-hour energy consumption predictions (96 intervals), with early stopping based on validation loss.
-- **Visualization:** Generates plots comparing historical and predicted energy consumption, stored in S3.
-- **Logging:** Comprehensive logging to file and console for monitoring and debugging.
-- **Environment Configuration:** Uses .env file for secure configuration of database and S3 credentials.
+- **Data Ingestion (ELT):** Reads `.csv`, `.xlsx`, and `.xls` files from AWS S3 or a local directory, with automatic fallback.
+- **Database Integration:** Inserts data into normalized PostgreSQL tables (customers, meters, measurements, phase measurements).
+- **Machine Learning:** Trains a quantile Bi-LSTM model per customer for next-step (15-minute) energy consumption prediction with 95% confidence intervals.
+- **REST API:** FastAPI-based API for querying measurements, predictions, and running step-by-step simulation.
+- **Simulation UI:** Browser-based dashboard to interactively step through time, view actual vs. predicted values, and visualize confidence bands on a real-time chart.
+- **Logging:** Comprehensive logging to file and console for all pipeline stages.
 
 ## Project Structure
 
-```bash
-├── config.py               # Database and S3 configuration
-├── create.sql              # PostgreSQL database schema setup
-├── data_load
-    ├── main.py             # Main pipeline logic for data insertion
-    ├── logger.py           # Logger setup for data insertion
-    ├── database.py         # Database connection and query execution
-    ├── file_processor.py   # File reading, validation, and database insertion
-    ├── s3_client.py        # AWS S3 interactions for file handling
-├── prediction
-    ├── main.py             # Main pipeline logic for prediction
-    ├── logger.py           # Logger setup for prediction
-    ├── data_processing.py  # Dataset class and preprocessing logic
-    ├── database_utils.py   # Database connection and data fetching utilities
-    ├── imports.py          # Shared imports for all modules processing and predictions
-    ├── model_definition.py # Bi-LSTM model definition
-    ├── model_training.py   # Model training and evaluation logic
-    ├── prediction_utils.py # Prediction, plotting, and storage utilities
-├── requirements.txt        # Project dependencies
-├── .env                    # Environment variables for DB and S3
+```
+├── config.py                   # Database, S3, and output configuration
+├── create.sql                  # PostgreSQL schema (tables, views, indexes, triggers)
+├── requirements.txt            # Python dependencies
+├── .env                        # Environment variables (DB, S3, local paths)
+│
+├── data_load/                  # Data ingestion pipeline
+│   ├── main.py                 # Entry point — orchestrates file discovery and processing
+│   ├── database.py             # Database connection and query execution (psycopg2)
+│   ├── file_client.py          # Unified file client (S3 with local fallback)
+│   ├── file_processor.py       # File parsing, validation, and DB insertion
+│   └── logger.py               # Logger setup for data ingestion
+│
+├── prediction_model/           # ML training and prediction pipeline
+│   ├── main.py                 # Entry point — CustomerBehaviorPipeline orchestrator
+│   ├── database_utils.py       # DB operations for fetching data, saving models/predictions
+│   ├── data_processing.py      # Dataset class and preprocessing (differencing, scaling)
+│   ├── model_definition.py     # BiLSTMQuantile model (PyTorch)
+│   ├── model_training.py       # Training loop with quantile loss and early stopping
+│   ├── prediction_utils.py     # Inference and plot generation
+│   ├── imports.py              # Shared imports for all prediction modules
+│   └── logger.py               # Logger setup for predictions
+│
+├── load_profile_api/           # FastAPI REST API
+│   ├── run.py                  # Uvicorn entry point
+│   └── app/
+│       ├── main.py             # App setup, CORS, routing, static file serving
+│       ├── database.py         # Async SQLAlchemy engine (asyncpg)
+│       ├── api/routes/
+│       │   ├── health.py       # Health check endpoint
+│       │   ├── measurement.py  # Measurement query endpoints
+│       │   ├── prediction.py   # Prediction query endpoints
+│       │   └── simulation.py   # Step-by-step simulation endpoint
+│       └── repositories/
+│           ├── measurement_repo.py  # Measurement SQL queries
+│           └── prediction_repo.py   # Prediction SQL queries
+│
+└── ui/                         # Browser-based simulation dashboard
+    ├── index.html              # Page structure
+    ├── index.css               # Styling (dark theme, design tokens)
+    └── index.js                # Chart.js visualization and API interaction
 ```
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.10+
 - PostgreSQL database
-- AWS S3 bucket with appropriate access
-- Required Python packages:
-    
-    Includes: ``` joblib, matplotlib, numpy, openpyxl, pandas, psycopg2-binary, python-dotenv, scikit-learn, seaborn, tensorflow, torch, boto3 ```
+- AWS S3 bucket (optional — local filesystem fallback supported)
 
 ## Setup
 
-1.  **Clone the Repository:**
+1. **Clone the Repository:**
 
     ```bash
-     git clone https://github.com/Sachithra-oshadha/ELT_test.git 
-     ```
-
-    ```bash 
-    cd ELT_test 
+    git clone https://github.com/Sachithra-oshadha/ELT_test.git
+    cd ELT_test
     ```
+
 2. **Install Dependencies:**
 
     ```bash
     pip install -r requirements.txt
     ```
-3. **Set Up Environment Variables:** 
-    
-    Create a .env file in the project root with the following:
-    
-    ```sql
-    DB_NAME= #database name
-    DB_USER= #username 
-    DB_PASSWORD= #password
-    DB_HOST= #host
-    DB_PORT= #postgres port (by default 5432)
-    
-    AWS_ACCESS_KEY_ID= #aws access key
-    AWS_SECRET_ACCESS_KEY= #aws secret access-key
-    AWS_REGION= #aws region
-    S3_BUCKET_NAME= #S3 bucket name
-    S3_BUCKET_PREFIX= #S3 bucket prefix
+
+3. **Configure Environment Variables:**
+
+    Create a `.env` file in the project root:
+
+    ```env
+    DB_NAME=load_profiles_db
+    DB_USER=postgres
+    DB_PASSWORD=postgres
+    DB_HOST=localhost
+    DB_PORT=5432
+
+    # Optional — S3 config (omit for local-only mode)
+    AWS_ACCESS_KEY_ID=
+    AWS_SECRET_ACCESS_KEY=
+    AWS_REGION=
+    S3_BUCKET_NAME=
+    S3_BUCKET_PREFIX=
+
+    # Local filesystem path for data files (used as S3 fallback)
+    LOCAL_INPUT_DIR="path/to/your/data"
     ```
-    **Note:** Replace sensitive values (e.g., AWS credentials) with your own and never commit the .env file.
 
-4. **Set Up the Database:** 
+4. **Set Up the Database:**
 
-    Execute the create.sql script to set up the PostgreSQL schema:
-    
     ```bash
-    psql -U postgres -d <database name> -f create.sql
+    psql -U postgres -d load_profiles_db -f create.sql
     ```
-
-
-5. **Run the Pipeline:**
-    - For data ingestion:
-        ```bash
-        python data_load/main.py
-        ```
-        This processes .csv, .xlsx, or .xls files from the S3 bucket and inserts data into the database.
-    - For predictions:
-        ```bash
-        python prediction/main.py
-        ```
-        This fetches data, trains/reuses Bi-LSTM models, generates predictions, and uploads plots to S3.
-
-## Database Schema
-
-The create.sql script defines the following:
-
-- **Tables:**
-    - customer: Stores customer details (customer_ref, first_name, last_name, email).
-    - meter: Links meters to customers (serial, customer_ref).
-    - measurement: Stores energy data (serial, timestamp, obis, import_kwh, power_factor, etc.).
-    - phase_measurement: Stores phase-specific data (serial, timestamp, phase, inst_current, inst_voltage, inst_power_factor).
-    - customer_model: Stores trained Bi-LSTM models (customer_ref, model_data, mse, r2_score).
-    - customer_prediction: Stores predictions (customer_ref, prediction_timestamp, predicted_usage, predicted_import_kwh).
-    - processed_files: Tracks processed S3 files (file_name, s3_path, processed_at).
-- **View:** measurement_summary combines measurement and phase data for easier querying.
-- **Indexes:** Optimize query performance on timestamp, serial, and customer_ref.
-- **Triggers:** Update updated_at timestamps for customer, meter, and customer_model.
 
 ## Usage
 
-- **Data Ingestion (data_load/main.py):**
-    - Scans the S3 bucket (load-profiles-bucket) under data/ for .csv, .xlsx, or .xls files.
-    - Downloads files to a temporary directory, processes them, and inserts data into customer, meter, measurement, and phase_measurement tables.
-    - Tracks processed files in processed_files to prevent reprocessing.
-    - Cleans up temporary files after processing.
-- **Prediction Pipeline (prediction/main.py):**
-    - Fetches data from measurement and phase_measurement tables.
-    - Preprocesses data (differencing import_kwh, standard scaling).
-    - Trains a Bi-LSTM model per customer if new data is available, using 9 input features (e.g., import_kwh, power_factor, phase measurements).
-    - Generates 24-hour predictions (96 intervals) and constrains predictions to be non-negative.
-    - Saves predictions to customer_prediction and models to customer_model.
-    - Generates and uploads plots comparing historical and predicted consumption to S3.
-- **Output:**
-    - Predictions in customer_prediction (predicted_usage, predicted_import_kwh).
-    - Models and metrics (mse, r2_score) in customer_model.
-    - Plots in S3 under s3://load-profiles-bucket/data/customer_<id>/.
-    - Logs in files like data_insertion_YYYY-MM-DD_HH-MM-SS.log (for data ingestion) or customer_behavior_bilstm_YYYY-MM-DD_HH-MM-SS.log (for predictions).
+### 1. Ingest Data
 
-## Key Components
-- **ElectricityDataset:** Custom PyTorch Dataset for sequence-based input-output pairs.
-- **BiLSTM:** Bidirectional LSTM model for time-series prediction.
-- **DatabaseManager:** Manages PostgreSQL connections and queries (in database_utils.py).
-- **FileProcessor:** Handles file reading, validation, and database insertion (in file_processor.py).
-- **CustomerBehaviorPipeline:** Orchestrates data fetching, preprocessing, training, prediction, and storage (in prediction/main.py).
-- **Prediction Utilities:** Functions for predictions, plotting, and saving results (in prediction_utils.py).
+```bash
+python data_load/main.py
+```
 
-## Logging
+Scans the configured source (S3 or local directory) for `.csv`/`.xlsx` files and loads them into the database. Already-processed files are tracked and skipped.
 
-- Logs are written to files (e.g., data_insertion_YYYY-MM-DD_HH-MM-SS.log for data ingestion, customer_behavior_bilstm_YYYY-MM-DD_HH-MM-SS.log for predictions) and printed to the console.
-- Log levels: 
-``` INFO, WARNING, ERROR. ```
-- Tracks file processing, database operations, S3 interactions, model training, and errors.
+### 2. Train Models & Generate Predictions
 
-## Error Handling
+```bash
+python prediction_model/main.py
+```
 
-- Database errors trigger transaction rollbacks and detailed logging.
-- File processing errors (e.g., invalid formats, missing columns) are logged and raised.
-- S3 connection or download failures are caught and logged.
-- Model training skips customers with insufficient or unchanged data.
+For each customer: fetches measurement data, trains (or reuses) a Bi-LSTM model, generates a next-15-minute prediction with confidence bounds, and saves everything to the database.
 
-## Notes
+### 3. Start the API Server
 
-- The prediction pipeline skips training if no new data is available since the last model training (based on last_trained_data_timestamp).
-- Predictions are constrained to be non-negative.
-- The Bi-LSTM model uses 9 input features and predicts 96 future intervals.
-- Temporary files are stored in a temporary directory and cleaned up after processing.
+```bash
+cd load_profile_api
+python run.py
+```
 
-## Contributing
+Starts the FastAPI server at `http://localhost:8000`. The simulation UI is served at `http://localhost:8000/ui/`.
 
-1. Fork the repository.
-2. Create a feature branch (git checkout -b feature/your-feature).
-3. Commit your changes (git commit -m "Add your feature").
-4. Push to the branch (git push origin feature/your-feature).
-5. Open a pull request.
+### 4. Use the Simulation UI
+
+- Open `http://localhost:8000/ui/` in a browser
+- Select a customer from the dropdown
+- Click **Simulate Next 15 Mins** to step through time
+- Use **Auto Run** for continuous simulation at 3-second intervals
+- The chart shows actual vs. predicted values with 95% confidence bands
+
+## Database Schema
+
+- **`customer`** — Customer identifiers and details
+- **`meter`** — Metering devices linked to customers
+- **`measurement`** — 15-minute load profile readings (import/export kW, kWh, power factor, current, voltage)
+- **`phase_measurement`** — Per-phase (A/B/C) instantaneous readings
+- **`customer_model`** — Serialized trained Bi-LSTM models with metrics
+- **`customer_prediction`** — Predicted usage and import kWh per customer per timestamp
+- **`processed_files`** — Tracks which data files have been ingested
+- **`measurement_summary`** — View joining measurements with phase data for convenient querying
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `GET` | `/simulation/customers_info` | List customers with data availability |
+| `POST` | `/simulation/simulate_step` | Run one prediction step for a customer |
+| `GET` | `/measurements/customer/{id}` | Get measurement at exact timestamp |
+| `GET` | `/measurements/customer/{id}/range` | Get measurements in time range |
+| `GET` | `/predictions/customer/{id}` | Get prediction at exact timestamp |
+| `GET` | `/predictions/customer/{id}/range` | Get predictions in time range |
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

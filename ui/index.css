@@ -1,3 +1,6 @@
+/* ========================================
+   CSS Variables (Design Tokens)
+   ======================================== */
 :root {
     --bg-color: #0f172a;
     --panel-bg: #1e293b;
@@ -10,6 +13,9 @@
     --warning-color: #f59e0b;
 }
 
+/* ========================================
+   Reset & Base
+   ======================================== */
 * {
     margin: 0;
     padding: 0;
@@ -25,6 +31,9 @@ body {
     flex-direction: column;
 }
 
+/* ========================================
+   Header
+   ======================================== */
 header {
     background-color: var(--panel-bg);
     padding: 1.5rem 2rem;
@@ -43,6 +52,9 @@ header h1 {
     -webkit-text-fill-color: transparent;
 }
 
+/* ========================================
+   Layout
+   ======================================== */
 .container {
     flex: 1;
     padding: 2rem;
@@ -54,6 +66,9 @@ header h1 {
     gap: 2rem;
 }
 
+/* ========================================
+   Controls
+   ======================================== */
 .controls {
     display: flex;
     gap: 1rem;
@@ -77,7 +92,11 @@ header h1 {
     font-weight: 500;
 }
 
-input {
+/* ========================================
+   Form Elements
+   ======================================== */
+input,
+select {
     background-color: var(--bg-color);
     border: 1px solid var(--border-color);
     color: var(--text-color);
@@ -85,12 +104,17 @@ input {
     border-radius: 0.5rem;
     outline: none;
     transition: border-color 0.2s;
+    font-size: inherit;
 }
 
-input:focus {
+input:focus,
+select:focus {
     border-color: var(--accent-primary);
 }
 
+/* ========================================
+   Buttons
+   ======================================== */
 button {
     background-color: var(--accent-primary);
     color: white;
@@ -122,6 +146,13 @@ button:disabled {
     transform: none;
 }
 
+.btn-secondary {
+    background-color: var(--border-color);
+}
+
+/* ========================================
+   Chart
+   ======================================== */
 .chart-container {
     background-color: var(--panel-bg);
     padding: 2rem;
@@ -133,6 +164,9 @@ button:disabled {
     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
 }
 
+/* ========================================
+   Status Badge
+   ======================================== */
 .status-badge {
     display: inline-flex;
     align-items: center;
@@ -145,6 +179,16 @@ button:disabled {
     color: #60a5fa;
 }
 
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--success-color);
+}
+
+/* ========================================
+   Stats Grid
+   ======================================== */
 .stats-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -173,6 +217,13 @@ button:disabled {
     color: var(--text-color);
 }
 
+.stat-value--accent {
+    color: var(--accent-primary);
+}
+
+/* ========================================
+   Loading Overlay
+   ======================================== */
 .loading-overlay {
     position: absolute;
     top: 0;

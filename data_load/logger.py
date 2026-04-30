@@ -19,4 +19,5 @@ def setup_logger():
             logging.StreamHandler()
         ]
     )
-    return logging.getLogger(__name__)
+    _logger = logging.getLogger(__name__)
+    return _logger

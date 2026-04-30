@@ -223,9 +223,9 @@ function updateStatus(message, type = 'info') {
     if (type === 'warning') color = 'var(--warning-color)';
 
     badge.innerHTML = `
-                <div style="width: 8px; height: 8px; border-radius: 50%; background-color: ${color};"></div>
-                ${message}
-            `;
+        <div class="status-dot" style="background-color: ${color};"></div>
+        ${message}
+    `;
 }
 
 async function simulateNextStep() {
@@ -282,7 +282,7 @@ async function simulateNextStep() {
 
         // Success
         updateStatus('Prediction Updated', 'success');
-        CountQueuingStrategy
+
         // Check if this is a duplicate response (sparse data gap)
         if (lastActualTime === data.actual_time) {
             // Data hasn't advanced — keep moving the simulated clock forward
@@ -372,11 +372,13 @@ function toggleAutoSimulate() {
         clearInterval(autoSimInterval);
         autoSimInterval = null;
         autoBtn.textContent = 'Auto Run';
-        autoBtn.style.backgroundColor = 'var(--border-color)';
+        autoBtn.classList.add('btn-secondary');
+        autoBtn.style.backgroundColor = '';
     } else {
         simulateNextStep(); // trigger immediately
         autoSimInterval = setInterval(simulateNextStep, 3000); // every 3 seconds
         autoBtn.textContent = 'Stop Auto';
+        autoBtn.classList.remove('btn-secondary');
         autoBtn.style.backgroundColor = 'var(--warning-color)';
     }
 }

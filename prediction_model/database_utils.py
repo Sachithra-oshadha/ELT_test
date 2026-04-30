@@ -1,4 +1,6 @@
-from imports import *
+import logging
+import psycopg2
+import pandas as pd
 
 class DatabaseManager:
     def __init__(self, db_config, logger: logging.Logger):
